@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.0] - 2026-10-12
+
+### Highlights
+
+- Open the MCP panel with a key of your choice, without losing the prompt you are typing.
+- Pi in RPC mode, as used by hosts such as Paseo, no longer hangs at startup in a project with MCP servers you have not approved yet.
+- The Parallel Search preset now tells Parallel that requests come from pi-mcp-adapter, with no user or install details.
+
 ### Added
 
 - You can open the MCP panel from a key you choose, so turning a server on or off no longer means clearing the prompt you are typing. Bind `mcp.panel.open` in Pi's `keybindings.json`, for example `{ "mcp.panel.open": "alt+m" }`. There is no default key. Thanks to [@Milor123](https://github.com/Milor123) for [#822](https://github.com/nicobailon/pi-mcp-adapter/issues/822).
@@ -17,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Pi in RPC mode no longer hangs at startup in a project with an unapproved project server or an unimported Pi sign-in. The adapter asked in a dialog, but Pi reads RPC input only after startup, so no answer could arrive and hosts such as Paseo saw Pi never respond. RPC sessions now skip unapproved project servers as the docs describe, and `"projectServers": "allow"` admits them. The approval and sign-in import dialogs appear only in the interactive TUI. Thanks to [@itssimon](https://github.com/itssimon) for [#825](https://github.com/nicobailon/pi-mcp-adapter/pull/825).
+- Pi in RPC mode no longer hangs at startup when the project has an MCP server you have not approved, or when there is a Pi sign-in the adapter has not imported yet. The adapter asked in a dialog, but Pi can't answer dialogs until startup finishes, so hosts such as Paseo saw Pi never respond. RPC sessions now skip unapproved project servers, as the docs describe, and admit them when your user-level `"projectServers"` setting is `"allow"`. Those two dialogs now appear only in the interactive terminal UI. Thanks to [@itssimon](https://github.com/itssimon) for [#825](https://github.com/nicobailon/pi-mcp-adapter/pull/825).
 
 ## [5.2.0] - 2026-10-09
 
