@@ -311,12 +311,20 @@ function getOpenCodeImportNotices(cwd: string, overridePath?: string): string[] 
     || getConfigSources(overridePath, cwd).some((source) => readSourceConfig(source.id, source.readPath)?.imports?.includes("opencode"));
   const imported = active ? loadImportedConfig("opencode", cwd, "Failed to inspect imported MCP config from opencode:") : null;
   if (!imported) return [];
-  const byFile = new Map<string, string[]>();
-  for (const [name, settings] of getOpenCodeIgnoredSettings(imported.value)) {
-    const path = imported.serverSources.get(name)?.path ?? imported.path;
-    byFile.set(path, [...byFile.get(path) ?? [], `"${name}": ${settings.join(", ")}`]);
+  // Name the file each key came from: a project entry can inherit a stray key from the global file.
+  const byFile = new Map<string, Map<string, string[]>>();
+  for (const [name, keys] of getOpenCodeIgnoredSettings(imported.value)) {
+    for (const key of keys) {
+      const path = imported.keySources?.get(name)?.get(key) ?? imported.path;
+      const servers = byFile.get(path) ?? new Map<string, string[]>();
+      servers.set(name, [...servers.get(name) ?? [], describeOpenCodeIgnoredKey(key)]);
+      byFile.set(path, servers);
+    }
   }
-  return [...byFile].map(([path, ignored]) => `${path}: OpenCode ignores these settings, so the import does too (details in /mcp-adapter): ${ignored.join("; ")}.`);
+  return [...byFile].map(([path, servers]) => {
+    const ignored = [...servers].map(([name, settings]) => `"${name}": ${settings.join(", ")}`);
+    return `${path}: OpenCode ignores these settings, so the import does too (details in /mcp-adapter): ${ignored.join("; ")}.`;
+  });
 }
 
 export function getSharedConfigPath(target: SharedConfigTarget, cwd = process.cwd()): string {
@@ -1065,11 +1073,19 @@ function loadImportedConfig(
   importKind: ImportKind,
   cwd: string,
   warningPrefix: string,
-): { path: string; value: unknown; source: ImportedServerSource; serverSources: Map<string, ImportedServerSource> } | null {
+): {
+  path: string;
+  value: unknown;
+  source: ImportedServerSource;
+  serverSources: Map<string, ImportedServerSource>;
+  /** OpenCode only: the file that last set each key of each server, in merge order. */
+  keySources?: Map<string, Map<string, string>>;
+} | null {
   if (importKind === "opencode") {
     let merged: Record<string, unknown> = {};
     let highestPrecedenceSource: ImportedServerSource | undefined;
     const serverSources = new Map<string, ImportedServerSource>();
+    const keySources = new Map<string, Map<string, string>>();
 
     for (const source of resolveImportCandidates(importKind, cwd)) {
       const { path } = source;
@@ -1099,7 +1115,13 @@ function loadImportedConfig(
             }];
           }));
           merged = mergeOpenCodeConfigs(merged, { ...imported, mcp: normalized });
-          for (const name of Object.keys(normalized)) serverSources.set(name, source);
+          for (const [name, entry] of Object.entries(normalized)) {
+            serverSources.set(name, source);
+            if (!isRecord(entry)) continue;
+            const keys = keySources.get(name) ?? new Map<string, string>();
+            for (const key of Object.keys(entry)) keys.set(key, path);
+            keySources.set(name, keys);
+          }
           highestPrecedenceSource = source;
         }
       } catch (error) {
@@ -1117,6 +1139,7 @@ function loadImportedConfig(
       value: merged,
       source: highestPrecedenceSource,
       serverSources,
+      keySources,
     };
   }
 
@@ -1414,9 +1437,13 @@ function getOpenCodeIgnoredSettings(merged: unknown): Map<string, string[]> {
     const entry = entries[name];
     if (!isRecord(entry) || entry.type !== "local") continue;
     const keys = Object.keys(entry).filter((key) => !OPENCODE_LOCAL_SERVER_KEYS.has(key));
-    if (keys.length > 0) ignored.set(name, keys.map((key) => key === "env" ? `env (OpenCode reads "environment"; rename it)` : key));
+    if (keys.length > 0) ignored.set(name, keys);
   }
   return ignored;
+}
+
+function describeOpenCodeIgnoredKey(key: string): string {
+  return key === "env" ? `env (OpenCode reads "environment"; rename it)` : key;
 }
 
 function mergeOpenCodeConfigs(base: Record<string, unknown>, next: Record<string, unknown>): Record<string, unknown> {
@@ -1962,7 +1989,7 @@ export function getServerProvenance(overridePath?: string, cwd = process.cwd()):
   const importProvenance = (importKind: ImportKind, value: unknown): Map<string, ServerProvenance> => {
     const ignored = importKind === "opencode" ? getOpenCodeIgnoredSettings(value) : new Map<string, string[]>();
     return new Map(Object.keys(extractServers(value, importKind)).map((name): [string, ServerProvenance] => {
-      const ignoredSettings = ignored.get(name);
+      const ignoredSettings = ignored.get(name)?.map(describeOpenCodeIgnoredKey);
       // Keep writes inside adapter-owned storage even though the source is external.
       return [name, { path: userPath, kind: "import", importKind, ...(ignoredSettings ? { ignoredSettings, ignoredSettingsSource: "opencode" } : {}) }];
     }));
@@ -1993,14 +2020,17 @@ export function getServerProvenance(overridePath?: string, cwd = process.cwd()):
 
     for (const name of Object.keys(loaded.mcpServers)) {
       // A Pi entry brings its own list; other sources keep the one from the Pi entry below them.
-      const inherited = loaded.ignoredSettings ? undefined : provenance.get(name);
-      const ignoredSettings = loaded.ignoredSettings ? loaded.ignoredSettings.get(name) : inherited?.ignoredSettings;
+      // A source that defines the server replaces an OpenCode import, so its OpenCode list no longer applies.
+      // (`loaded.mcpServers` holds only the file's own servers, so a plain import keeps its list.)
+      const below = provenance.get(name);
+      const ignoredSettings = loaded.ignoredSettings
+        ? loaded.ignoredSettings.get(name)
+        : below?.ignoredSettingsSource === "opencode" ? undefined : below?.ignoredSettings;
       provenance.set(name, {
         path: source.writePath,
         kind: source.kind,
         ...(source.importKind !== undefined ? { importKind: source.importKind } : {}),
         ...(ignoredSettings !== undefined ? { ignoredSettings } : {}),
-        ...(inherited?.ignoredSettingsSource !== undefined ? { ignoredSettingsSource: inherited.ignoredSettingsSource } : {}),
       });
     }
   }
