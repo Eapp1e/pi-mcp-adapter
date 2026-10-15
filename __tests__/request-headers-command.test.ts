@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -40,8 +40,9 @@ const waitForHelper = setInterval(() => {
   return { script, pidFile };
 }
 
-// SIGKILL delivery is asynchronous, so wait a bounded time for the helper to be gone.
+// SIGKILL delivery is asynchronous, so wait a bounded time for the helper to exit.
 // The bound stays under vitest's 5s test timeout so a survivor is killed and reported.
+// A killed orphan stays a zombie until PID 1 reaps it, which some container inits never do.
 async function expectHelperToExit(pidFile: string): Promise<void> {
   const pid = Number(readFileSync(pidFile, "utf8"));
   const deadline = Date.now() + 2_000;
@@ -52,6 +53,7 @@ async function expectHelperToExit(pidFile: string): Promise<void> {
       if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
       throw error;
     }
+    if (spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim().startsWith("Z")) return;
     await delay(20);
   }
   process.kill(pid, "SIGKILL");
