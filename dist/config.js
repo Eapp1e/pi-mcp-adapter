@@ -206,9 +206,13 @@ function getOpenCodeImportNotices(cwd, overridePath) {
     const imported = active ? loadImportedConfig("opencode", cwd, "Failed to inspect imported MCP config from opencode:") : null;
     if (!imported)
         return [];
+    // Warn only where the OpenCode import is still the server's definition, matching /mcp-adapter.
+    const provenance = getServerProvenance(overridePath, cwd);
     // Name the file each key came from: a project entry can inherit a stray key from the global file.
     const byFile = new Map();
     for (const [name, keys] of getOpenCodeIgnoredSettings(imported.value)) {
+        if (provenance.get(name)?.ignoredSettingsSource !== "opencode")
+            continue;
         for (const key of keys) {
             const path = imported.keySources?.get(name)?.get(key) ?? imported.path;
             const servers = byFile.get(path) ?? new Map();

@@ -2078,6 +2078,7 @@ describe("config discovery", () => {
     // An adapter entry that redefines the server replaces the import, so the OpenCode line no longer applies to it.
     writeJson(adapterPath, { imports: ["opencode"], mcpServers: { calendar: { command: "calendar-mcp", env: { FROM: "adapter" } } } });
     expect(getServerProvenance(undefined, project).get("calendar")).toEqual({ path: adapterPath, kind: "user" });
+    expect(getLegacyMcpMigrationNotices(project)).toEqual([]);
   });
 
   it("imports OpenCode v2 project servers through host discovery", async () => {
