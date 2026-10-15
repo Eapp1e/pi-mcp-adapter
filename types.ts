@@ -493,7 +493,7 @@ export interface ServerEntry {
   searchKeywords?: Record<string, string[]>;
   // Require interactive approval before calling matching MCP tools/resources.
   approveTools?: boolean | "destructive" | string[];
-  /** Set to false to never open MCP App UIs for this server's tools; results stay inline. */
+  /** Set to false to tell this server the host has no MCP App UI; its tools run and return results inline. */
   openUi?: boolean;
   // Debug
   debug?: boolean;  // Show server stderr (default: false)
