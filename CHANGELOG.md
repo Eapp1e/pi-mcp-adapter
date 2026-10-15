@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Proxy `describe` returns the original input JSON Schema whenever a compact TypeScript shape would hide part of the contract: referenced definitions when compact rendering is unsupported, and descriptions, integer requirements, bounds and annotations when it succeeds. Plain structural schemas stay compact. Search points from abbreviated parameter summaries to the full description, and oversized descriptions use the existing output guard and keep the complete text in a file. Thanks to [@chpock](https://github.com/chpock) for [#833](https://github.com/nicobailon/pi-mcp-adapter/pull/833) and [#834](https://github.com/nicobailon/pi-mcp-adapter/pull/834).
+- After you reconnect a server in the MCP panel with ctrl+r, the tools you had saved as direct tools now show as selected, so toggling one tool and saving no longer drops the rest of your selection. Thanks to [@Milor123](https://github.com/Milor123) for [#829](https://github.com/nicobailon/pi-mcp-adapter/issues/829).
 
 ## [5.3.0] - 2026-10-12
 
