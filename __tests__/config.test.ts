@@ -2067,7 +2067,7 @@ describe("config discovery", () => {
     });
     writeJson(join(project, "opencode.json"), { mcp: { calendar: { environment: { FROM: "project" } } } });
 
-    const { getLegacyMcpMigrationNotices, getServerProvenance, loadMcpConfig } = await import("../config.ts");
+    const { getLegacyMcpMigrationNotices, getProjectPiConfigPath, getServerProvenance, loadMcpConfig } = await import("../config.ts");
     expect(loadMcpConfig().mcpServers.calendar).toEqual({ command: "calendar-mcp", args: [], env: { FROM: "project" } });
     const hint = `env (OpenCode reads "environment"; rename it)`;
     expect(getServerProvenance(undefined, project).get("calendar")?.ignoredSettings).toEqual([hint]);
@@ -2079,6 +2079,12 @@ describe("config discovery", () => {
     writeJson(adapterPath, { imports: ["opencode"], mcpServers: { calendar: { command: "calendar-mcp", env: { FROM: "adapter" } } } });
     expect(getServerProvenance(undefined, project).get("calendar")).toEqual({ path: adapterPath, kind: "user" });
     expect(getLegacyMcpMigrationNotices(project)).toEqual([]);
+
+    // A project file that imports OpenCode replaces the global definition, so the warning comes back.
+    writeJson(adapterPath, { mcpServers: { calendar: { command: "calendar-mcp", env: { FROM: "adapter" } } } });
+    writeJson(getProjectPiConfigPath(project), { imports: ["opencode"] });
+    expect(loadMcpConfig(undefined, project).mcpServers.calendar).toEqual({ command: "calendar-mcp", args: [], env: { FROM: "project" } });
+    expect(getLegacyMcpMigrationNotices(project)).toHaveLength(1);
   });
 
   it("imports OpenCode v2 project servers through host discovery", async () => {

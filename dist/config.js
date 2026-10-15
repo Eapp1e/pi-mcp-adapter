@@ -1808,13 +1808,17 @@ export function getServerProvenance(overridePath, cwd = process.cwd()) {
         if (!loaded)
             continue;
         if (loaded.imports?.length) {
+            // Same precedence as expandImports + mergeConfigs: the first import in a file wins, and a later file replaces earlier ones.
+            const imported = new Set();
             for (const importKind of loaded.imports) {
-                const imported = loadImportedConfig(importKind, cwd, `Failed to inspect imported MCP config from ${importKind}:`);
-                if (!imported)
+                const importedConfig = loadImportedConfig(importKind, cwd, `Failed to inspect imported MCP config from ${importKind}:`);
+                if (!importedConfig)
                     continue;
-                for (const [name, prov] of importProvenance(importKind, imported.value)) {
-                    if (!provenance.has(name))
-                        provenance.set(name, prov);
+                for (const [name, prov] of importProvenance(importKind, importedConfig.value)) {
+                    if (imported.has(name))
+                        continue;
+                    imported.add(name);
+                    provenance.set(name, prov);
                 }
             }
         }
