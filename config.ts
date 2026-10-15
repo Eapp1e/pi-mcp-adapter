@@ -1434,17 +1434,19 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }
 
-// OpenCode's schema allows only these keys on a local server (V1 and V2 forms) and silently drops the rest.
+// OpenCode's schema allows only these keys on a server (V1 and V2 forms) and silently drops the rest.
 const OPENCODE_LOCAL_SERVER_KEYS = new Set(["type", "command", "cwd", "environment", "enabled", "disabled", "codemode", "timeout", "protocol"]);
+const OPENCODE_REMOTE_SERVER_KEYS = new Set(["type", "url", "headers", "oauth", "enabled", "disabled", "codemode", "timeout", "protocol"]);
 
-/** Keys of imported OpenCode local servers that OpenCode ignores, so the import ignores them too. */
+/** Keys of imported OpenCode servers that OpenCode ignores, so the import ignores them too. */
 function getOpenCodeIgnoredSettings(merged: unknown): Map<string, string[]> {
   const ignored = new Map<string, string[]>();
   const entries = isRecord(merged) && isRecord(merged.mcp) ? merged.mcp : {};
   for (const name of Object.keys(extractServers(merged, "opencode"))) {
     const entry = entries[name];
-    if (!isRecord(entry) || entry.type !== "local") continue;
-    const keys = Object.keys(entry).filter((key) => !OPENCODE_LOCAL_SERVER_KEYS.has(key));
+    if (!isRecord(entry) || (entry.type !== "local" && entry.type !== "remote")) continue;
+    const allowed = entry.type === "local" ? OPENCODE_LOCAL_SERVER_KEYS : OPENCODE_REMOTE_SERVER_KEYS;
+    const keys = Object.keys(entry).filter((key) => !allowed.has(key));
     if (keys.length > 0) ignored.set(name, keys);
   }
   return ignored;
