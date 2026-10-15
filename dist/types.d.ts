@@ -327,7 +327,7 @@ export interface ServerEntry {
      */
     searchKeywords?: Record<string, string[]>;
     approveTools?: boolean | "destructive" | string[];
-    /** Set to false to never open MCP App UIs for this server's tools; results stay inline. */
+    /** Set to false to tell this server the host has no MCP App UI; its tools run and return results inline. */
     openUi?: boolean;
     debug?: boolean;
     /** Enable metadata-only JSONL protocol tracing for this server. */

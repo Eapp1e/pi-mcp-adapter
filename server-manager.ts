@@ -1307,7 +1307,7 @@ export class McpServerManager {
             transport,
             requestTimeoutMs: this.getResolvedRequestTimeoutMs(definition),
             clientInfo: { name: `pi-mcp-${name}`, version: "1.0.0" },
-            clientCapabilities: this.buildClientCapabilities(),
+            clientCapabilities: this.buildClientCapabilities(definition),
             ...(this.elicitationConfig
               ? {
                   onElicitation: (request: Parameters<typeof handleElicitationRequest>[1], signal?: AbortSignal) =>
@@ -1449,13 +1449,12 @@ export class McpServerManager {
     }
   }
 
-  private buildClientCapabilities() {
+  private buildClientCapabilities(definition: ServerDefinition) {
     return {
-      extensions: {
-        "io.modelcontextprotocol/ui": {
-          mimeTypes: [RESOURCE_MIME_TYPE],
-        },
-      },
+      // openUi: false tells the server there is no UI, so MCP App tools return results instead of deferring to a form.
+      ...(definition.openUi === false
+        ? {}
+        : { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [RESOURCE_MIME_TYPE] } } }),
       ...(this.samplingConfig ? { sampling: {} } : {}),
       ...(this.elicitationConfig
         ? {
@@ -1469,7 +1468,7 @@ export class McpServerManager {
   }
 
   private createClient(serverName: string, definition: ServerDefinition): Client {
-    const capabilities = this.buildClientCapabilities();
+    const capabilities = this.buildClientCapabilities(definition);
     const versionNegotiation = resolveVersionNegotiation(definition);
     let client: Client;
     client = new AdapterClient(

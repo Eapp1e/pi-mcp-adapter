@@ -136,6 +136,8 @@ export function computeServerHash(definition: ServerEntry, environment: NodeJS.P
     exposeResources: definition.exposeResources,
     includeTools: definition.includeTools,
     excludeTools: definition.excludeTools,
+    // Servers may list different tools when the host has no UI. Only false is hashed so other caches stay valid.
+    ...(definition.openUi === false ? { openUi: false } : {}),
   };
   const normalized = stableStringify(identity);
   return createHash("sha256").update(normalized).digest("hex");
