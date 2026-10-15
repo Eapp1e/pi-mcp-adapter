@@ -800,7 +800,9 @@ export function executeDescribe(state: McpExtensionState, toolName: string, serv
 
   if (toolMeta.inputSchema && !toolMeta.resourceUri) {
     const shape = renderTsShape(toolMeta.inputSchema);
-    text += shape === null ? `\nParameters:\n${formatSchema(toolMeta.inputSchema)}` : `\nShape:\n${shape}`;
+    text += shape === null
+      ? `\nInput schema (JSON Schema):\n\`\`\`json\n${JSON.stringify(toolMeta.inputSchema, null, 2)}\n\`\`\``
+      : `\nShape:\n${shape}`;
   } else if (toolMeta.resourceUri) {
     text += `\nNo parameters required (resource tool).`;
   } else {
@@ -816,6 +818,16 @@ export function executeDescribe(state: McpExtensionState, toolName: string, serv
   return {
     content: [{ type: "text" as const, text: text.trim() }],
     details: { mode: "describe", tool: toolMeta, server: serverName },
+  };
+}
+
+export async function executeGuardedDescribe(state: McpExtensionState, toolName: string, serverOverride?: string): Promise<ProxyToolResult> {
+  const result = executeDescribe(state, toolName, serverOverride);
+  const guarded = await guardMcpOutput(result.content, resolveMcpOutputGuardOptions(state.config.settings));
+  return {
+    ...result,
+    content: guarded.content,
+    details: { ...result.details, ...guardedMcpDetails(guarded) },
   };
 }
 
@@ -868,6 +880,9 @@ function renderSearchResults(
         text += shape === null
           ? `\n  Parameters:\n${formatSchema(match.tool.inputSchema, "    ")}\n`
           : `\n  Shape:\n${shape.split("\n").map(line => `    ${line}`).join("\n")}\n`;
+        if (shape === null) {
+          text += `  Parameter summary only. Full input schema: mcp(${JSON.stringify({ describe: match.tool.name, server: match.server })})\n`;
+        }
       } else if (match.tool.resourceUri) {
         text += "  No parameters (resource tool).\n";
       }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Proxy `describe` now returns the original input JSON Schema when compact TypeScript rendering is unsupported, rather than losing referenced parameter definitions. Search keeps a summary and points to the full description; oversized descriptions use the existing output guard and retain the complete text in a file.
+
 ## [5.3.0] - 2026-10-12
 
 ### Highlights
