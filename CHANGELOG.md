@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Proxy `describe` now returns the original input JSON Schema when compact TypeScript rendering is unsupported, rather than losing referenced parameter definitions. Search keeps a summary and points to the full description; oversized descriptions use the existing output guard and retain the complete text in a file.
+- Proxy `describe` returns the original input JSON Schema whenever a compact TypeScript shape would hide part of the contract: referenced definitions when compact rendering is unsupported, and descriptions, integer requirements, bounds and annotations when it succeeds. Plain structural schemas stay compact. Search points from abbreviated parameter summaries to the full description, and oversized descriptions use the existing output guard and keep the complete text in a file. Thanks to [@chpock](https://github.com/chpock) for [#833](https://github.com/nicobailon/pi-mcp-adapter/pull/833) and [#834](https://github.com/nicobailon/pi-mcp-adapter/pull/834).
 
 ## [5.3.0] - 2026-10-12
 

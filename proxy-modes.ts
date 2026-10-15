@@ -7,7 +7,7 @@ import { getServerPrefix, getToolNameCandidates, isServerDisabled, parseUiPrompt
 import { lazyConnect, markKeepAliveAfterConnect, notifyToolMetadataUpdated, updateServerMetadata, updateMetadataCache, getFailureAgeSeconds, updateStatusBar, clearFailure, recordFailure } from "./init.ts";
 import { abortable, throwIfAborted } from "./abort.ts";
 import { combineAbortSignals, isAbortError } from "./runtime-owner.ts";
-import { buildToolMetadata, getToolNames, formatSchema } from "./tool-metadata.ts";
+import { buildToolMetadata, getToolNames, formatSchema, isPlainTypeSchema } from "./tool-metadata.ts";
 import { renderTsShape } from "./ts-shape.ts";
 import { getObservedOutput, observedOutputRecorder, renderOutputShape } from "./output-shape.ts";
 import { reconstructPromptMetadata } from "./metadata-cache.ts";
@@ -800,9 +800,9 @@ export function executeDescribe(state: McpExtensionState, toolName: string, serv
 
   if (toolMeta.inputSchema && !toolMeta.resourceUri) {
     const shape = renderTsShape(toolMeta.inputSchema);
-    text += shape === null
-      ? `\nInput schema (JSON Schema):\n\`\`\`json\n${JSON.stringify(toolMeta.inputSchema, null, 2)}\n\`\`\``
-      : `\nShape:\n${shape}`;
+    text += shape !== null && isPlainTypeSchema(toolMeta.inputSchema)
+      ? `\nShape:\n${shape}`
+      : `\nInput schema (JSON Schema):\n\`\`\`json\n${JSON.stringify(toolMeta.inputSchema, null, 2)}\n\`\`\``;
   } else if (toolMeta.resourceUri) {
     text += `\nNo parameters required (resource tool).`;
   } else {
@@ -880,7 +880,7 @@ function renderSearchResults(
         text += shape === null
           ? `\n  Parameters:\n${formatSchema(match.tool.inputSchema, "    ")}\n`
           : `\n  Shape:\n${shape.split("\n").map(line => `    ${line}`).join("\n")}\n`;
-        if (shape === null) {
+        if (shape === null || !isPlainTypeSchema(match.tool.inputSchema)) {
           text += `  Parameter summary only. Full input schema: mcp(${JSON.stringify({ describe: match.tool.name, server: match.server })})\n`;
         }
       } else if (match.tool.resourceUri) {
