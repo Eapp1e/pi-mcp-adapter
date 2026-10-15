@@ -2053,6 +2053,34 @@ describe("config discovery", () => {
     expect(output).toContain(`Ignored OpenCode settings: args, extra`);
   });
 
+  it("reports settings OpenCode ignores on imported remote servers", async () => {
+    const home = mkdtempSync(join(tmpdir(), "pi-mcp-opencode-ignored-remote-home-"));
+    const project = mkdtempSync(join(tmpdir(), "pi-mcp-opencode-ignored-remote-project-"));
+    process.env.HOME = home;
+    process.chdir(project);
+    const adapterPath = join(home, ".pi", "agent", "mcp-adapter.json");
+    const openCodePath = join(home, ".config", "opencode", "opencode.json");
+    writeJson(adapterPath, { imports: ["opencode"], mcpServers: {} });
+    writeJson(openCodePath, {
+      mcp: {
+        docs: { type: "remote", url: "https://docs.test/mcp", headers: { Authorization: "Bearer t" }, directTools: true },
+        plain: { type: "remote", url: "https://plain.test/mcp", headers: { Authorization: "Bearer t" }, oauth: false, enabled: true, timeout: 5000 },
+      },
+    });
+
+    const { getLegacyMcpMigrationNotices, getServerProvenance, loadMcpConfig } = await import("../config.ts");
+    expect(loadMcpConfig().mcpServers).toEqual({
+      docs: { url: "https://docs.test/mcp", headers: { Authorization: "Bearer t" } },
+      plain: { url: "https://plain.test/mcp", headers: { Authorization: "Bearer t" }, oauth: false },
+    });
+    expect(getLegacyMcpMigrationNotices(project)).toEqual([
+      `${openCodePath}: OpenCode ignores these settings, so the import does too (details in /mcp-adapter): "docs": directTools.`,
+    ]);
+    const provenance = getServerProvenance(undefined, project);
+    expect(provenance.get("docs")?.ignoredSettings).toEqual(["directTools"]);
+    expect(provenance.get("plain")).toEqual({ path: adapterPath, kind: "import", importKind: "opencode" });
+  });
+
   it("reports a key a project OpenCode entry inherits from the global file, against the global file", async () => {
     const home = mkdtempSync(join(tmpdir(), "pi-mcp-opencode-ignored-merge-home-"));
     const project = realpathSync(mkdtempSync(join(tmpdir(), "pi-mcp-opencode-ignored-merge-project-")));
