@@ -2,7 +2,7 @@ import { Container, Text, matchesKey, truncateToWidth, visibleWidth, type Compon
 import { copyToClipboard, type Theme } from "@earendil-works/pi-coding-agent";
 import { createPanelKeys, type PanelKeybindings, type PanelKeys } from "./panel-keys.ts";
 import { createMcpPanelTheme, McpPanelFrame, type McpPanelTheme } from "./mcp-panel-theme.ts";
-import { getToolNameCandidates, isServerDisabled, isToolAllowed, resolveToolPrefix } from "./types.ts";
+import { describeIgnoredSettings, getToolNameCandidates, isServerDisabled, isToolAllowed, resolveToolPrefix } from "./types.ts";
 import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerEntry, ServerProvenance, ToolPrefix } from "./types.ts";
 import { resourceNameToToolName } from "./resource-tools.ts";
 import { sanitizeTerminalText, stripOscSequences } from "./utils.ts";
@@ -86,7 +86,7 @@ interface ServerState {
   expanded: boolean;
   source: "user" | "project" | "import";
   importKind?: string;
-  ignoredSettings?: string[];
+  ignoredSettings?: string;
   signInProvider?: string;
   includeTools?: string[];
   excludeTools?: string[];
@@ -207,8 +207,7 @@ class McpPanelView implements Component {
             }
           }
           if ((isCursor || server.expanded) && server.ignoredSettings) {
-            const text = `Ignored Pi mcp.json settings: ${server.ignoredSettings.join(", ")}`;
-            for (const line of this.wrapText(sanitizeDisplayText(text), innerWidth - 6)) {
+            for (const line of this.wrapText(sanitizeDisplayText(server.ignoredSettings), innerWidth - 6)) {
               this.addRow(`    ${this.theme.hint(line)}`, innerWidth);
             }
           }
@@ -555,7 +554,7 @@ class McpPanel {
         expanded: false,
         source: prov?.kind ?? "user",
         ...(prov?.importKind !== undefined ? { importKind: prov.importKind } : {}),
-        ...(prov?.ignoredSettings !== undefined ? { ignoredSettings: prov.ignoredSettings } : {}),
+        ...(prov?.ignoredSettings !== undefined ? { ignoredSettings: describeIgnoredSettings(prov)! } : {}),
         ...(typeof definition.auth === "object" ? { signInProvider: definition.auth.provider } : {}),
         ...(definition.includeTools !== undefined ? { includeTools: definition.includeTools } : {}),
         ...(definition.excludeTools !== undefined ? { excludeTools: definition.excludeTools } : {}),

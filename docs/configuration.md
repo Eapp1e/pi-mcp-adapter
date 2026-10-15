@@ -107,7 +107,7 @@ Shared MCP files are loaded automatically. Use `imports` only for host-specific 
 
 Supported compatibility imports: `cursor`, `claude-code`, `claude-desktop`, `opencode`, `vscode`, `windsurf`, `codex`
 
-`pi-mcp-adapter init` detects these host-specific configs and adds missing imports to the Pi agent dir config for you. The `opencode` import reads OpenCode V1 `mcp` entries from both `~/.config/opencode/opencode.json` and the project `opencode.json`, with project fields taking precedence. It is explicit-import only; OpenCode V2, inline content, managed configs, and remote discovery are not supported.
+`pi-mcp-adapter init` detects these host-specific configs and adds missing imports to the Pi agent dir config for you. The `opencode` import reads OpenCode V1 `mcp` entries from both `~/.config/opencode/opencode.json` and the project `opencode.json`, with project fields taking precedence. It is explicit-import only; OpenCode V2, inline content, managed configs, and remote discovery are not supported. A local server runs exactly as OpenCode would run it: OpenCode ignores keys outside its schema, such as `env` (OpenCode reads `environment`), so the import ignores them too and reports them once at startup, under the server in `/mcp-adapter`, and in `pi-mcp-adapter doctor`.
 
 ## Project server trust
 
