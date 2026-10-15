@@ -2117,6 +2117,7 @@ describe("config discovery", () => {
     const withEnvironment = calendar();
     writeJson(projectOpenCode, { mcp: { calendar: { env: {} } } });
     expect(calendar()).toEqual(withEnvironment);
+    expect(getLegacyMcpMigrationNotices(project)).toEqual([]);
   });
 
   it("imports OpenCode v2 project servers through host discovery", async () => {
