@@ -162,6 +162,9 @@ function legacyMcpConfigHasContent(filePath) {
     }
 }
 export function getLegacyMcpMigrationNotices(cwd = process.cwd(), overridePath) {
+    return [...getPiMcpConfigNotices(cwd, overridePath), ...getOpenCodeImportNotices(cwd, overridePath)];
+}
+function getPiMcpConfigNotices(cwd, overridePath) {
     if (piMcpConfigEnabled) {
         return getConfigSources(overridePath, cwd).flatMap((source) => {
             const file = isPiMcpSource(source.id) ? readPiMcpConfig(source.readPath) : null;
@@ -194,6 +197,32 @@ export function getLegacyMcpMigrationNotices(cwd = process.cwd(), overridePath) 
             ? `Merge ${source} into ${target}, then remove ${source}.`
             : `Move it with: mv ${JSON.stringify(source)} ${JSON.stringify(target)}`;
         return [`pi-mcp-adapter no longer reads ${source}. ${fix}`];
+    });
+}
+/** Settings OpenCode drops from an active `opencode` import, grouped by the file that defines each server. */
+function getOpenCodeImportNotices(cwd, overridePath) {
+    const active = (!isExclusiveConfigMode() && getConfiguredHostConfigDiscovery(overridePath, cwd) === "on")
+        || getConfigSources(overridePath, cwd).some((source) => readSourceConfig(source.id, source.readPath)?.imports?.includes("opencode"));
+    const imported = active ? loadImportedConfig("opencode", cwd, "Failed to inspect imported MCP config from opencode:") : null;
+    if (!imported)
+        return [];
+    // Warn only where the OpenCode import is still the server's definition, matching /mcp-adapter.
+    const provenance = getServerProvenance(overridePath, cwd);
+    // Name the file each key came from: a project entry can inherit a stray key from the global file.
+    const byFile = new Map();
+    for (const [name, keys] of getOpenCodeIgnoredSettings(imported.value)) {
+        if (provenance.get(name)?.ignoredSettingsSource !== "opencode")
+            continue;
+        for (const key of keys) {
+            const path = imported.keySources?.get(name)?.get(key) ?? imported.path;
+            const servers = byFile.get(path) ?? new Map();
+            servers.set(name, [...servers.get(name) ?? [], describeOpenCodeIgnoredKey(key)]);
+            byFile.set(path, servers);
+        }
+    }
+    return [...byFile].map(([path, servers]) => {
+        const ignored = [...servers].map(([name, settings]) => `"${name}": ${settings.join(", ")}`);
+        return `${path}: OpenCode ignores these settings, so the import does too (details in /mcp-adapter): ${ignored.join("; ")}.`;
     });
 }
 export function getSharedConfigPath(target, cwd = process.cwd()) {
@@ -886,6 +915,7 @@ function loadImportedConfig(importKind, cwd, warningPrefix) {
         let merged = {};
         let highestPrecedenceSource;
         const serverSources = new Map();
+        const keySources = new Map();
         for (const source of resolveImportCandidates(importKind, cwd)) {
             const { path } = source;
             if (!existsSync(path))
@@ -915,8 +945,15 @@ function loadImportedConfig(importKind, cwd, warningPrefix) {
                             }];
                     }));
                     merged = mergeOpenCodeConfigs(merged, { ...imported, mcp: normalized });
-                    for (const name of Object.keys(normalized))
+                    for (const [name, entry] of Object.entries(normalized)) {
                         serverSources.set(name, source);
+                        if (!isRecord(entry))
+                            continue;
+                        const keys = keySources.get(name) ?? new Map();
+                        for (const key of Object.keys(entry))
+                            keys.set(key, path);
+                        keySources.set(name, keys);
+                    }
                     highestPrecedenceSource = source;
                 }
             }
@@ -936,6 +973,7 @@ function loadImportedConfig(importKind, cwd, warningPrefix) {
             value: merged,
             source: highestPrecedenceSource,
             serverSources,
+            keySources,
         };
     }
     for (const source of resolveImportCandidates(importKind, cwd)) {
@@ -1230,6 +1268,25 @@ function isRecord(value) {
 }
 function isStringRecord(value) {
     return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+// OpenCode's schema allows only these keys on a local server (V1 and V2 forms) and silently drops the rest.
+const OPENCODE_LOCAL_SERVER_KEYS = new Set(["type", "command", "cwd", "environment", "enabled", "disabled", "codemode", "timeout", "protocol"]);
+/** Keys of imported OpenCode local servers that OpenCode ignores, so the import ignores them too. */
+function getOpenCodeIgnoredSettings(merged) {
+    const ignored = new Map();
+    const entries = isRecord(merged) && isRecord(merged.mcp) ? merged.mcp : {};
+    for (const name of Object.keys(extractServers(merged, "opencode"))) {
+        const entry = entries[name];
+        if (!isRecord(entry) || entry.type !== "local")
+            continue;
+        const keys = Object.keys(entry).filter((key) => !OPENCODE_LOCAL_SERVER_KEYS.has(key));
+        if (keys.length > 0)
+            ignored.set(name, keys);
+    }
+    return ignored;
+}
+function describeOpenCodeIgnoredKey(key) {
+    return key === "env" ? `env (OpenCode reads "environment"; rename it)` : key;
 }
 function mergeOpenCodeConfigs(base, next) {
     const baseMcp = base.mcp;
@@ -1728,16 +1785,22 @@ export function writeSharedServerEntry(filePath, serverName, entry) {
 export function getServerProvenance(overridePath, cwd = process.cwd()) {
     const provenance = new Map();
     const userPath = getPiGlobalConfigPath(overridePath);
+    const importProvenance = (importKind, value) => {
+        const ignored = importKind === "opencode" ? getOpenCodeIgnoredSettings(value) : new Map();
+        return new Map(Object.keys(extractServers(value, importKind)).map((name) => {
+            const ignoredSettings = ignored.get(name)?.map(describeOpenCodeIgnoredKey);
+            // Keep writes inside adapter-owned storage even though the source is external.
+            return [name, { path: userPath, kind: "import", importKind, ...(ignoredSettings ? { ignoredSettings, ignoredSettingsSource: "opencode" } : {}) }];
+        }));
+    };
     if (getConfiguredHostConfigDiscovery(overridePath, cwd) === "on") {
         for (const importKind of Object.keys(IMPORT_PATHS)) {
             const imported = loadImportedConfig(importKind, cwd, `Failed to inspect imported MCP config from ${importKind}:`);
             if (!imported)
                 continue;
-            for (const name of Object.keys(extractServers(imported.value, importKind))) {
-                // Keep writes inside adapter-owned storage even though the source is external.
-                // Later import kinds win in the same deterministic order as loadDiscoveredHostConfigs.
-                provenance.set(name, { path: userPath, kind: "import", importKind });
-            }
+            // Later import kinds win in the same deterministic order as loadDiscoveredHostConfigs.
+            for (const [name, prov] of importProvenance(importKind, imported.value))
+                provenance.set(name, prov);
         }
     }
     for (const source of getConfigSources(overridePath, cwd)) {
@@ -1745,21 +1808,28 @@ export function getServerProvenance(overridePath, cwd = process.cwd()) {
         if (!loaded)
             continue;
         if (loaded.imports?.length) {
+            // Same precedence as expandImports + mergeConfigs: the first import in a file wins, and a later file replaces earlier ones.
+            const imported = new Set();
             for (const importKind of loaded.imports) {
-                const imported = loadImportedConfig(importKind, cwd, `Failed to inspect imported MCP config from ${importKind}:`);
-                if (!imported)
+                const importedConfig = loadImportedConfig(importKind, cwd, `Failed to inspect imported MCP config from ${importKind}:`);
+                if (!importedConfig)
                     continue;
-                const servers = extractServers(imported.value, importKind);
-                for (const name of Object.keys(servers)) {
-                    if (!provenance.has(name)) {
-                        provenance.set(name, { path: userPath, kind: "import", importKind });
-                    }
+                for (const [name, prov] of importProvenance(importKind, importedConfig.value)) {
+                    if (imported.has(name))
+                        continue;
+                    imported.add(name);
+                    provenance.set(name, prov);
                 }
             }
         }
         for (const name of Object.keys(loaded.mcpServers)) {
             // A Pi entry brings its own list; other sources keep the one from the Pi entry below them.
-            const ignoredSettings = loaded.ignoredSettings ? loaded.ignoredSettings.get(name) : provenance.get(name)?.ignoredSettings;
+            // A source that defines the server replaces an OpenCode import, so its OpenCode list no longer applies.
+            // (`loaded.mcpServers` holds only the file's own servers, so a plain import keeps its list.)
+            const below = provenance.get(name);
+            const ignoredSettings = loaded.ignoredSettings
+                ? loaded.ignoredSettings.get(name)
+                : below?.ignoredSettingsSource === "opencode" ? undefined : below?.ignoredSettings;
             provenance.set(name, {
                 path: source.writePath,
                 kind: source.kind,

@@ -568,9 +568,13 @@ export interface ServerProvenance {
     path: string;
     kind: "user" | "project" | "import";
     importKind?: string;
-    /** Settings from Pi's `mcp.json` that the adapter could not translate for this server. */
+    /** Settings from Pi's `mcp.json` that the adapter could not translate, or that OpenCode ignores in an imported server. */
     ignoredSettings?: string[];
+    /** Set when `ignoredSettings` came from an imported OpenCode server rather than Pi's `mcp.json`. */
+    ignoredSettingsSource?: "opencode";
 }
+/** The line `/mcp-adapter` and `doctor` show for a server's ignored settings. */
+export declare function describeIgnoredSettings(provenance: ServerProvenance | undefined): string | undefined;
 export interface McpAuthResult {
     ok: boolean;
     message?: string;
