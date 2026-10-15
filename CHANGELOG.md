@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.1] - 2026-10-15
+
+### Highlights
+
+- On Windows, `!command` secrets now run with Git Bash when it is installed, so commands like `!$HOME/bin/get-token` work.
+- `"openUi": false` really runs a server's tools without UI, instead of leaving them waiting on a window that never opens.
+- `describe` no longer hides tool input details such as descriptions, limits and integer types behind a short summary.
+- The MCP panel keeps your saved direct tools selected after a ctrl+r reconnect.
+- OpenCode imports accept `env` for server variables and tell you about settings OpenCode ignores.
+
 ### Fixed
 
-- Proxy `describe` returns the original input JSON Schema whenever a compact TypeScript shape would hide part of the contract: referenced definitions when compact rendering is unsupported, and descriptions, integer requirements, bounds and annotations when it succeeds. Plain structural schemas stay compact. Search points from abbreviated parameter summaries to the full description, and oversized descriptions use the existing output guard and keep the complete text in a file. Thanks to [@chpock](https://github.com/chpock) for [#833](https://github.com/nicobailon/pi-mcp-adapter/pull/833) and [#834](https://github.com/nicobailon/pi-mcp-adapter/pull/834).
+- `describe` in the `mcp` tool now shows a tool's full input schema whenever the short summary would leave something out, such as field descriptions, integer types, minimum and maximum values, or shared definitions. Simple schemas still get the short summary. When search shortens a parameter's description, it points you to `describe` for the full text, and very long descriptions are saved to a file instead of being cut off. Thanks to [@chpock](https://github.com/chpock) for [#833](https://github.com/nicobailon/pi-mcp-adapter/pull/833) and [#834](https://github.com/nicobailon/pi-mcp-adapter/pull/834).
 - After you reconnect a server in the MCP panel with ctrl+r, the tools you had saved as direct tools now show as selected, so toggling one tool and saving no longer drops the rest of your selection. Thanks to [@Milor123](https://github.com/Milor123) for [#829](https://github.com/nicobailon/pi-mcp-adapter/issues/829).
 - `"openUi": false` now runs a server's tools without UI instead of only hiding the window. The adapter no longer tells that server it supports MCP Apps, so a server that checks for MCP Apps support runs its tools and returns the result rather than waiting on a form that never opens. Turning it on or off makes the adapter fetch that server's tool list again. Thanks to [@nicolasgarciac](https://github.com/nicolasgarciac) for [#827](https://github.com/nicobailon/pi-mcp-adapter/issues/827).
 - The OpenCode import now accepts `env` as another name for `environment` on a server, so servers configured with `env` get their variables in Pi instead of failing with "Connection closed". When both are set, `environment` wins. OpenCode itself still reads only `environment`. Other settings outside OpenCode's schema are reported at startup, in `/mcp-adapter` and in `pi-mcp-adapter doctor`. Thanks to [@cbaudino](https://github.com/cbaudino) and [@syf2211](https://github.com/syf2211) for [#828](https://github.com/nicobailon/pi-mcp-adapter/issues/828) and [#830](https://github.com/nicobailon/pi-mcp-adapter/pull/830).
