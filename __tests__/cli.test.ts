@@ -565,13 +565,13 @@ describe("cli doctor", () => {
   it("lists settings OpenCode ignores under an imported server", async () => {
     const context = setup({ imports: ["opencode"], mcpServers: {} });
     writeJson(join(context.home, ".config", "opencode", "opencode.json"), {
-      mcp: { calendar: { type: "local", command: [process.execPath, "-e", "process.exit(1)"], env: { KEY: "value" } } },
+      mcp: { calendar: { type: "local", command: [process.execPath, "-e", "process.exit(1)"], args: ["--x"] } },
     });
 
     const result = await doctor([], context);
 
     expect(result.stdout).toContain(`calendar: failed`);
-    expect(result.stdout).toContain(`\n  Ignored OpenCode settings: env (OpenCode reads "environment"; rename it)\n`);
+    expect(result.stdout).toContain(`\n  Ignored OpenCode settings: args\n`);
   });
 
   it("exits 1 and explains a refused local server", async () => {

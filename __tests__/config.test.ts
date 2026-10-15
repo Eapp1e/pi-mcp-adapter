@@ -2023,7 +2023,7 @@ describe("config discovery", () => {
     writeJson(adapterPath, { imports: ["opencode"], mcpServers: {} });
     writeJson(openCodePath, {
       mcp: {
-        calendar: { type: "local", command: ["calendar-mcp"], enabled: true, env: { GOOGLE_OAUTH_CREDENTIALS: "/keys.json" }, args: ["--x"] },
+        calendar: { type: "local", command: ["calendar-mcp"], enabled: true, args: ["--x"], extra: true },
         plain: { type: "local", command: ["plain-mcp"], environment: { TOKEN: "t" } },
       },
     });
@@ -2035,9 +2035,8 @@ describe("config discovery", () => {
       calendar: { command: "calendar-mcp", args: [] },
       plain: { command: "plain-mcp", args: [], env: { TOKEN: "t" } },
     });
-    const hint = `env (OpenCode reads "environment"; rename it)`;
     expect(getLegacyMcpMigrationNotices(project)).toEqual([
-      `${openCodePath}: OpenCode ignores these settings, so the import does too (details in /mcp-adapter): "calendar": ${hint}, args.`,
+      `${openCodePath}: OpenCode ignores these settings, so the import does too (details in /mcp-adapter): "calendar": args, extra.`,
     ]);
     const provenance = getServerProvenance(undefined, project);
     expect(provenance.get("plain")).toEqual({ path: adapterPath, kind: "import", importKind: "opencode" });
@@ -2051,10 +2050,10 @@ describe("config discovery", () => {
     const panel = createMcpPanel(config, null, provenance, callbacks, { requestRender: () => {} }, () => {});
     const output = panel.render(140).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
     panel.dispose();
-    expect(output).toContain(`Ignored OpenCode settings: ${hint}, args`);
+    expect(output).toContain(`Ignored OpenCode settings: args, extra`);
   });
 
-  it("reports an env key a project OpenCode entry inherits from the global file, against the global file", async () => {
+  it("reports a key a project OpenCode entry inherits from the global file, against the global file", async () => {
     const home = mkdtempSync(join(tmpdir(), "pi-mcp-opencode-ignored-merge-home-"));
     const project = realpathSync(mkdtempSync(join(tmpdir(), "pi-mcp-opencode-ignored-merge-project-")));
     process.env.HOME = home;
@@ -2063,16 +2062,15 @@ describe("config discovery", () => {
     const globalOpenCode = join(home, ".config", "opencode", "opencode.json");
     writeJson(adapterPath, { imports: ["opencode"], mcpServers: {} });
     writeJson(globalOpenCode, {
-      mcp: { calendar: { type: "local", command: ["calendar-mcp"], env: { FROM: "global" } } },
+      mcp: { calendar: { type: "local", command: ["calendar-mcp"], env: { FROM: "global" }, args: ["--x"] } },
     });
     writeJson(join(project, "opencode.json"), { mcp: { calendar: { environment: { FROM: "project" } } } });
 
     const { getLegacyMcpMigrationNotices, getProjectPiConfigPath, getServerProvenance, loadMcpConfig } = await import("../config.ts");
     expect(loadMcpConfig().mcpServers.calendar).toEqual({ command: "calendar-mcp", args: [], env: { FROM: "project" } });
-    const hint = `env (OpenCode reads "environment"; rename it)`;
-    expect(getServerProvenance(undefined, project).get("calendar")?.ignoredSettings).toEqual([hint]);
+    expect(getServerProvenance(undefined, project).get("calendar")?.ignoredSettings).toEqual(["args"]);
     expect(getLegacyMcpMigrationNotices(project)).toEqual([
-      `${globalOpenCode}: OpenCode ignores these settings, so the import does too (details in /mcp-adapter): "calendar": ${hint}.`,
+      `${globalOpenCode}: OpenCode ignores these settings, so the import does too (details in /mcp-adapter): "calendar": args.`,
     ]);
 
     // An adapter entry that redefines the server replaces the import, so the OpenCode line no longer applies to it.
@@ -2085,6 +2083,40 @@ describe("config discovery", () => {
     writeJson(getProjectPiConfigPath(project), { imports: ["opencode"] });
     expect(loadMcpConfig(undefined, project).mcpServers.calendar).toEqual({ command: "calendar-mcp", args: [], env: { FROM: "project" } });
     expect(getLegacyMcpMigrationNotices(project)).toHaveLength(1);
+  });
+
+  it("accepts env as another name for environment in OpenCode imports", async () => {
+    const home = mkdtempSync(join(tmpdir(), "pi-mcp-opencode-env-alias-home-"));
+    const project = mkdtempSync(join(tmpdir(), "pi-mcp-opencode-env-alias-project-"));
+    process.env.HOME = home;
+    process.chdir(project);
+    const globalOpenCode = join(home, ".config", "opencode", "opencode.json");
+    const projectOpenCode = join(project, "opencode.json");
+    writeJson(join(home, ".pi", "agent", "mcp-adapter.json"), { imports: ["opencode"], mcpServers: {} });
+    const { getLegacyMcpMigrationNotices, loadMcpConfig } = await import("../config.ts");
+    const calendar = () => loadMcpConfig(undefined, project).mcpServers.calendar;
+
+    writeJson(globalOpenCode, { mcp: { calendar: { type: "local", command: ["calendar-mcp"], env: { KEY: "from-env" } } } });
+    expect(calendar()).toEqual({ command: "calendar-mcp", args: [], env: { KEY: "from-env" } });
+    expect(getLegacyMcpMigrationNotices(project)).toEqual([]);
+
+    // OpenCode runs `environment`, so it wins when both are set.
+    writeJson(globalOpenCode, {
+      mcp: { calendar: { type: "local", command: ["calendar-mcp"], env: { KEY: "from-env" }, environment: { KEY: "from-environment" } } },
+    });
+    expect(calendar()?.env).toEqual({ KEY: "from-environment" });
+
+    // A project entry that changes the command drops inherited variables, whichever name set them.
+    writeJson(globalOpenCode, { mcp: { calendar: { type: "local", command: ["calendar-mcp"], env: { KEY: "from-env" } } } });
+    writeJson(projectOpenCode, { mcp: { calendar: { command: ["other-mcp"] } } });
+    expect(calendar()).toEqual({ command: "other-mcp", args: [] });
+
+    // An empty `env` counts as set, exactly like an empty `environment`.
+    writeJson(globalOpenCode, { mcp: { calendar: { type: "local", command: ["calendar-mcp"], environment: { KEY: "global" } } } });
+    writeJson(projectOpenCode, { mcp: { calendar: { environment: {} } } });
+    const withEnvironment = calendar();
+    writeJson(projectOpenCode, { mcp: { calendar: { env: {} } } });
+    expect(calendar()).toEqual(withEnvironment);
   });
 
   it("imports OpenCode v2 project servers through host discovery", async () => {

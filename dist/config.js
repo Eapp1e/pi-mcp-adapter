@@ -216,7 +216,7 @@ function getOpenCodeImportNotices(cwd, overridePath) {
         for (const key of keys) {
             const path = imported.keySources?.get(name)?.get(key) ?? imported.path;
             const servers = byFile.get(path) ?? new Map();
-            servers.set(name, [...servers.get(name) ?? [], describeOpenCodeIgnoredKey(key)]);
+            servers.set(name, [...servers.get(name) ?? [], key]);
             byFile.set(path, servers);
         }
     }
@@ -930,8 +930,14 @@ function loadImportedConfig(importKind, cwd, warningPrefix) {
                     const entries = isRecord(mcp.servers)
                         ? { ...Object.fromEntries(Object.entries(mcp).filter(([name]) => name !== "servers" && name !== "timeout")), ...mcp.servers }
                         : mcp;
-                    const normalized = Object.fromEntries(Object.entries(entries).map(([name, entry]) => {
-                        if (!isRecord(entry) || !isRecord(entry.oauth))
+                    const normalized = Object.fromEntries(Object.entries(entries).map(([name, raw]) => {
+                        if (!isRecord(raw))
+                            return [name, raw];
+                        // OpenCode reads only `environment`; the import also accepts the common `env` spelling.
+                        // `environment` wins when both are set, since that is what OpenCode runs.
+                        const { env, ...rest } = raw;
+                        const entry = env !== undefined && rest.environment === undefined ? { ...rest, environment: env } : rest;
+                        if (!isRecord(entry.oauth))
                             return [name, entry];
                         const { client_id, client_secret, auth_server_metadata_url, ...oauth } = entry.oauth;
                         return [name, {
@@ -1284,9 +1290,6 @@ function getOpenCodeIgnoredSettings(merged) {
             ignored.set(name, keys);
     }
     return ignored;
-}
-function describeOpenCodeIgnoredKey(key) {
-    return key === "env" ? `env (OpenCode reads "environment"; rename it)` : key;
 }
 function mergeOpenCodeConfigs(base, next) {
     const baseMcp = base.mcp;
@@ -1788,7 +1791,7 @@ export function getServerProvenance(overridePath, cwd = process.cwd()) {
     const importProvenance = (importKind, value) => {
         const ignored = importKind === "opencode" ? getOpenCodeIgnoredSettings(value) : new Map();
         return new Map(Object.keys(extractServers(value, importKind)).map((name) => {
-            const ignoredSettings = ignored.get(name)?.map(describeOpenCodeIgnoredKey);
+            const ignoredSettings = ignored.get(name);
             // Keep writes inside adapter-owned storage even though the source is external.
             return [name, { path: userPath, kind: "import", importKind, ...(ignoredSettings ? { ignoredSettings, ignoredSettingsSource: "opencode" } : {}) }];
         }));
