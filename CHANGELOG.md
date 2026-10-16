@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The GitHub preset in `/mcp-adapter setup` is gone. It signed in with MCP OAuth, which GitHub's sign-in server doesn't support for clients it hasn't registered, so `/mcp-auth github` always failed with "does not support dynamic client registration". If you added it, replace the `github` entry with a personal access token: `"github": { "url": "https://api.githubcopilot.com/mcp/", "headers": { "Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}" } }`. Thanks to [@Milor123](https://github.com/Milor123) for [#841](https://github.com/nicobailon/pi-mcp-adapter/issues/841).
+
+### Fixed
+
+- When one config file sets a different `url` for a server that another file gave headers or a token, the adapter still leaves those credentials out so they aren't sent to the new address, but it now tells you at startup which server, which settings and which two files are involved. Before, the credentials disappeared silently and the server failed with sign-in errors. Thanks to [@Milor123](https://github.com/Milor123) for [#841](https://github.com/nicobailon/pi-mcp-adapter/issues/841).
+
 ## [5.3.1] - 2026-10-15
 
 ### Highlights

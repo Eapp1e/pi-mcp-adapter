@@ -8,7 +8,7 @@ Where the adapter reads MCP servers from, which file wins, how project servers a
 
 **Open the panel from a key:** To open the panel without clearing a prompt you are typing, bind `mcp.panel.open` in Pi's [`keybindings.json`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md), for example `{ "mcp.panel.open": "alt+m" }`, then run `/reload`. You can bind one key or a list of keys. There is no default key.
 
-**Guided first-run setup:** Run `/mcp-adapter setup` to choose the normal write target for new shared servers — project `.mcp.json` or global `~/.config/mcp/mcp.json` — inspect detected shared MCP files, adopt compatibility imports from other hosts, open discovered config paths, preview exact before/after file diffs for writes, scaffold a minimal selected config, add a curated known server (DeepWiki, Context7, Parallel Search, Tavily Search, Notion, GitHub, Chrome DevTools, or Figma (desktop) when the Figma app is installed), or quick-add RepoPrompt into a standard/shared MCP file.
+**Guided first-run setup:** Run `/mcp-adapter setup` to choose the normal write target for new shared servers — project `.mcp.json` or global `~/.config/mcp/mcp.json` — inspect detected shared MCP files, adopt compatibility imports from other hosts, open discovered config paths, preview exact before/after file diffs for writes, scaffold a minimal selected config, add a curated known server (DeepWiki, Context7, Parallel Search, Tavily Search, Notion, Chrome DevTools, or Figma (desktop) when the Figma app is installed), or quick-add RepoPrompt into a standard/shared MCP file.
 
 **Figma:** Figma's remote server, `https://mcp.figma.com/mcp`, only accepts approved clients, and Pi isn't approved yet. Use the Figma desktop app's local server instead: run `/mcp-adapter setup` and add Figma (desktop). It needs a Dev or Full seat on a paid Figma plan; to turn it on, open a Design file, switch to Dev Mode (Shift+D), and click "Enable desktop MCP server" in the inspect panel.
 
@@ -93,6 +93,8 @@ Within the selected root, `.mcp.json` and `<configDir>/mcp-adapter.json` load fr
 ## Project Config
 
 Prefer `.mcp.json` for project-local shared MCP config and `~/.config/mcp/mcp.json` for user-global shared MCP config. Use `.pi/mcp-adapter.json` for adapter-specific project overrides. Project files override user-global sources.
+
+Entries for the same server merge field by field, but credentials (`headers`, bearer tokens, `oauth`, and the other auth fields) stay with the `url` they were written for: when a higher-precedence file sets a different `url`, the lower file's credentials are not sent, and the adapter says so at startup, naming both files. The notice covers config files and their imports; a url change between two files of the same host (such as global and project `opencode.json`), or for a server from a package or plugin, drops credentials the same way without a notice.
 
 ## Import Existing Configs
 

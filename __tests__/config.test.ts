@@ -2081,6 +2081,47 @@ describe("config discovery", () => {
     expect(provenance.get("plain")).toEqual({ path: adapterPath, kind: "import", importKind: "opencode" });
   });
 
+  it("says which file's credentials a url override in another file drops", async () => {
+    const home = mkdtempSync(join(tmpdir(), "pi-mcp-dropped-credentials-home-"));
+    const project = mkdtempSync(join(tmpdir(), "pi-mcp-dropped-credentials-project-"));
+    process.env.HOME = home;
+    process.chdir(project);
+    const sharedPath = join(home, ".config", "mcp", "mcp.json");
+    const adapterPath = join(home, ".pi", "agent", "mcp-adapter.json");
+    const headers = { Authorization: "Bearer secret-token" };
+    writeJson(sharedPath, { mcpServers: { github: { url: "https://api.githubcopilot.com/mcp/", headers } } });
+    writeJson(adapterPath, { mcpServers: { github: { url: "https://api.githubcopilot.com/mcp", auth: "oauth" } } });
+
+    const { getLegacyMcpMigrationNotices, loadMcpConfig } = await import("../config.ts");
+    expect(loadMcpConfig(undefined, project).mcpServers.github).toEqual({ url: "https://api.githubcopilot.com/mcp", auth: "oauth" });
+    expect(getLegacyMcpMigrationNotices(project)).toEqual([
+      `"github": ignoring headers from ${sharedPath}, because ${adapterPath} sets a different url for this server. Use one url, or set it next to that url.`,
+    ]);
+
+    writeJson(adapterPath, { mcpServers: { github: { url: "https://api.githubcopilot.com/mcp/", auth: "oauth" } } });
+    expect(getLegacyMcpMigrationNotices(project)).toEqual([]);
+
+    writeJson(adapterPath, { mcpServers: { github: { url: "https://api.githubcopilot.com/mcp", headers } } });
+    expect(getLegacyMcpMigrationNotices(project)).toEqual([]);
+  });
+
+  it("names the OpenCode file that supplied a dropped credential, not the project file that inherits it", async () => {
+    const home = mkdtempSync(join(tmpdir(), "pi-mcp-dropped-opencode-home-"));
+    const project = realpathSync(mkdtempSync(join(tmpdir(), "pi-mcp-dropped-opencode-project-")));
+    process.env.HOME = home;
+    process.chdir(project);
+    const globalOpenCode = join(home, ".config", "opencode", "opencode.json");
+    const adapterPath = join(home, ".pi", "agent", "mcp-adapter.json");
+    writeJson(globalOpenCode, { mcp: { docs: { type: "remote", url: "https://docs.test/mcp", headers: { Authorization: "Bearer t" } } } });
+    writeJson(join(project, "opencode.json"), { mcp: { docs: { timeout: 5000 } } });
+    writeJson(adapterPath, { imports: ["opencode"], mcpServers: { docs: { url: "https://docs.test/v2/mcp" } } });
+
+    const { getLegacyMcpMigrationNotices } = await import("../config.ts");
+    expect(getLegacyMcpMigrationNotices(project)).toContain(
+      `"docs": ignoring headers from ${globalOpenCode}, because ${adapterPath} sets a different url for this server. Use one url, or set it next to that url.`,
+    );
+  });
+
   it("reports a key a project OpenCode entry inherits from the global file, against the global file", async () => {
     const home = mkdtempSync(join(tmpdir(), "pi-mcp-opencode-ignored-merge-home-"));
     const project = realpathSync(mkdtempSync(join(tmpdir(), "pi-mcp-opencode-ignored-merge-project-")));
