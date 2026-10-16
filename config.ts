@@ -1015,7 +1015,7 @@ const URL_BOUND_AUTH_FIELDS = ["headers", "bearerToken", "bearerTokenEnv", "bear
 const CREDENTIAL_FIELDS = [...URL_BOUND_AUTH_FIELDS, "auth", "oauth"] as const;
 
 /** The credential fields of `existing` that mergeServerMaps drops for `definition`'s different url. */
-function droppedUrlBoundAuth(existing: ServerEntry, definition: ServerEntry): string[] {
+function droppedUrlBoundAuth(existing: ServerEntry, definition: ServerEntry): (typeof CREDENTIAL_FIELDS)[number][] {
   if (typeof definition.url !== "string" || definition.url === existing.url) return [];
   return CREDENTIAL_FIELDS.filter((field) => {
     if (Object.hasOwn(definition, field)) return false;
@@ -1070,13 +1070,10 @@ function mergeServerMaps(
     }
     if (existing && typeof definition.url === "string" && definition.url !== existing.url) {
       if (baseEntry === existing) baseEntry = { ...existing };
-      for (const field of URL_BOUND_AUTH_FIELDS) {
+      // Provider tokens (object `auth`) and OAuth config are bound to the url too; the startup
+      // notice reports exactly these fields, so both read the one rule.
+      for (const field of droppedUrlBoundAuth(existing, definition)) {
         delete baseEntry[field];
-      }
-      // A provider token is bound to the url that asked for it, like the fields above.
-      if (typeof baseEntry.auth === "object") delete baseEntry.auth;
-      if (baseEntry.oauth !== false) {
-        delete baseEntry.oauth;
       }
     }
     if (existing && Object.hasOwn(definition, "env") && isBuiltInAgentPlugin(existing, "env") && !Object.hasOwn(definition, "literalEnv")) {

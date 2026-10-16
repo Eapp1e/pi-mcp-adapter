@@ -898,14 +898,10 @@ function mergeServerMaps(base, next) {
         if (existing && typeof definition.url === "string" && definition.url !== existing.url) {
             if (baseEntry === existing)
                 baseEntry = { ...existing };
-            for (const field of URL_BOUND_AUTH_FIELDS) {
+            // Provider tokens (object `auth`) and OAuth config are bound to the url too; the startup
+            // notice reports exactly these fields, so both read the one rule.
+            for (const field of droppedUrlBoundAuth(existing, definition)) {
                 delete baseEntry[field];
-            }
-            // A provider token is bound to the url that asked for it, like the fields above.
-            if (typeof baseEntry.auth === "object")
-                delete baseEntry.auth;
-            if (baseEntry.oauth !== false) {
-                delete baseEntry.oauth;
             }
         }
         if (existing && Object.hasOwn(definition, "env") && isBuiltInAgentPlugin(existing, "env") && !Object.hasOwn(definition, "literalEnv")) {
