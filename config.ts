@@ -77,6 +77,14 @@ export const KNOWN_SERVER_PRESETS: readonly KnownServerPreset[] = [
     entry: { url: "https://mcp.notion.com/mcp", auth: "oauth", protocolVersion: "auto" },
   },
   {
+    id: "github",
+    name: "GitHub",
+    summary: "Work with GitHub using your GitHub CLI sign-in. Needs `gh` installed and `gh auth login` done.",
+    // GitHub's OAuth server has no dynamic client registration, so MCP OAuth can't sign in;
+    // the GitHub CLI token works and is read at connect time, never written to config.
+    entry: { url: "https://api.githubcopilot.com/mcp/", auth: "bearer", bearerToken: "!gh auth token", protocolVersion: "auto" },
+  },
+  {
     id: "chrome-devtools",
     name: "Chrome DevTools",
     summary: "Inspect and automate a local Chrome browser.",

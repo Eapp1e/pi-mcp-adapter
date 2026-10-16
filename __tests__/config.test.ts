@@ -2447,6 +2447,12 @@ describe("config discovery", () => {
       protocolVersion: "auto",
       directTools: true,
     });
+    expect(KNOWN_SERVER_PRESETS.find(({ id }) => id === "github")?.entry).toEqual({
+      url: "https://api.githubcopilot.com/mcp/",
+      auth: "bearer",
+      bearerToken: "!gh auth token",
+      protocolVersion: "auto",
+    });
     expect(KNOWN_SERVER_PRESETS.find(({ id }) => id === "chrome-devtools")?.entry.protocolVersion).toBeUndefined();
   });
 

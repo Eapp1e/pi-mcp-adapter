@@ -25,7 +25,7 @@ Since then, Pi 0.99 added MCP support of its own, which also keeps tool definiti
 - **More servers work fully.** Servers can ask you questions through forms, show interactive UIs, and offer prompt templates as slash commands. The built-in doesn't handle these.
 - **Find tools by what you mean.** The built-in's tool search only matches words. With a System One key, the adapter can also rank tools by meaning: in a test of 12 everyday requests across 95 tools, it put the right tool first in 10 of 11, where word search did in 5.
 - **Sign-in tokens go in your OS keychain** by default (an encrypted file is opt-in), not in a plain JSON file under `~/.pi/agent`.
-- **Adding servers is easier.** Give the agent a server's URL and it installs it and checks its tools in the same session, opening sign-in first if the server needs it, with no shell command or `/reload`. Servers already configured in Cursor, Claude Code, Codex, or VS Code can be imported with `/mcp-adapter setup`, which also adds presets such as Figma and Notion.
+- **Adding servers is easier.** Give the agent a server's URL and it installs it and checks its tools in the same session, opening sign-in first if the server needs it, with no shell command or `/reload`. Servers already configured in Cursor, Claude Code, Codex, or VS Code can be imported with `/mcp-adapter setup`, which also adds presets such as Figma and GitHub.
 
 The built-in has two things the adapter doesn't: Pi's permission extensions see each MCP call as its own tool call without changes, and it sends roots (the session directory) to servers. Pi's `codemode` works with both.
 
@@ -41,7 +41,7 @@ The built-in has two things the adapter doesn't: Pi's permission extensions see 
 | MCP UI apps | Left out | Native window or browser |
 | Add a server | `pi mcp add` in a shell, then `/reload` | Give the agent the URL: `mcp({ action: "install", url })` connects it and checks its tools in the current session; for an OAuth server it opens sign-in first and checks the tools once you approve |
 | Configs from Cursor, Claude Code, Codex, VS Code | Convert by hand | Imported |
-| Guided setup in a session | No; `/mcp` manages servers that are already configured | `/mcp-adapter setup` overlay: imports configs found on your machine, adds presets (Figma desktop and RepoPrompt when installed, Notion, Context7, DeepWiki, Parallel Search, Tavily Search, Chrome DevTools), and previews each file change before writing |
+| Guided setup in a session | No; `/mcp` manages servers that are already configured | `/mcp-adapter setup` overlay: imports configs found on your machine, adds presets (Figma desktop and RepoPrompt when installed, GitHub, Notion, Context7, DeepWiki, Parallel Search, Tavily Search, Chrome DevTools), and previews each file change before writing |
 | Ask before risky tools | Through a permission extension, which sees every MCP call | Built in (`approveTools`); permission extensions see proxy calls as the proxy tool |
 | Roots (session directory sent to servers) | Yes | No |
 | Shell commands | `pi mcp add`, `remove`, `list` | `pi-mcp-adapter init`, `doctor` |
