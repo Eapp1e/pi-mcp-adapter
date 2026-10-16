@@ -263,7 +263,86 @@ function legacyMcpConfigHasContent(filePath: string): boolean {
 }
 
 export function getLegacyMcpMigrationNotices(cwd = process.cwd(), overridePath?: string): string[] {
-  return [...getPiMcpConfigNotices(cwd, overridePath), ...getOpenCodeImportNotices(cwd, overridePath)];
+  return [
+    ...getPiMcpConfigNotices(cwd, overridePath),
+    ...getOpenCodeImportNotices(cwd, overridePath),
+    ...getDroppedCredentialNotices(cwd, overridePath),
+  ];
+}
+
+/** server name -> credential field -> the file that supplied it. */
+type CredentialFiles = Map<string, Map<string, string>>;
+
+function credentialFiles(servers: Record<string, ServerEntry>, fileOf: (name: string) => string): CredentialFiles {
+  return new Map(Object.entries(servers).map(([name, definition]) => [
+    name,
+    new Map(CREDENTIAL_FIELDS.filter((field) => definition[field] !== undefined).map((field) => [field, fileOf(name)])),
+  ]));
+}
+
+/**
+ * Replays the server merges of loadMcpConfigWithSources with the file behind each credential field,
+ * and reports the fields mergeServerMaps drops because a later file points the server at another url.
+ */
+function getDroppedCredentialNotices(cwd: string, overridePath?: string): string[] {
+  const notices: string[] = [];
+  const merge = (
+    base: Record<string, ServerEntry>,
+    baseFiles: CredentialFiles,
+    next: Record<string, ServerEntry>,
+    nextFiles: CredentialFiles,
+    urlFile: (name: string) => string,
+  ): [Record<string, ServerEntry>, CredentialFiles] => {
+    const files: CredentialFiles = new Map(baseFiles);
+    for (const [name, definition] of Object.entries(next)) {
+      const existing = base[name];
+      const fieldFiles = new Map(files.get(name));
+      const byFile = new Map<string, string[]>();
+      for (const field of existing ? droppedUrlBoundAuth(existing, definition) : []) {
+        const from = fieldFiles.get(field);
+        if (from !== undefined) byFile.set(from, [...byFile.get(from) ?? [], field]);
+        fieldFiles.delete(field);
+      }
+      for (const [from, fields] of byFile) {
+        notices.push(`"${name}": ignoring ${fields.join(", ")} from ${from}, because ${urlFile(name)} sets a different url for this server. Use one url, or set ${fields.length === 1 ? "it" : "them"} next to that url.`);
+      }
+      for (const [field, path] of nextFiles.get(name) ?? []) fieldFiles.set(field, path);
+      files.set(name, fieldFiles);
+    }
+    return [mergeServerMaps(base, next), files];
+  };
+
+  const host = !isExclusiveConfigMode() && getConfiguredHostConfigDiscovery(overridePath, cwd) === "on"
+    ? loadDiscoveredHostConfigs(cwd)
+    : { config: { mcpServers: {} }, serverSources: new Map<string, ImportedServerSource>() };
+  const hostFile = (name: string) => host.serverSources.get(name)?.path ?? "a host config";
+  let servers = host.config.mcpServers;
+  let files = credentialFiles(servers, hostFile);
+  const sourceSpecs = getConfigSources(overridePath, cwd);
+  const piProjectSource = sourceSpecs.find((source) => source.id === "pi-mcp-project");
+  const piProjectNames = Object.keys((piProjectSource && readPiMcpConfig(piProjectSource.readPath))?.mcpServers ?? {});
+  for (const source of sourceSpecs) {
+    const loaded = readSourceConfig(source.id, source.readPath);
+    if (!loaded) continue;
+    if (source.id === "pi-mcp-global") {
+      for (const name of piProjectNames) delete loaded.mcpServers[name];
+    }
+    // The same two merges as expandImports and mergeConfigs: the file's own entries over its imports,
+    // then the file over the files before it.
+    const imported = expandImports({ ...loaded, mcpServers: {} }, cwd);
+    const importFile = (name: string) => imported.serverSources.get(name)?.path ?? source.readPath;
+    const ownFile = () => source.readPath;
+    const [fileServers, fileFiles] = merge(
+      imported.config.mcpServers,
+      credentialFiles(imported.config.mcpServers, importFile),
+      loaded.mcpServers,
+      credentialFiles(loaded.mcpServers, ownFile),
+      ownFile,
+    );
+    const urlFile = (name: string) => typeof loaded.mcpServers[name]?.url === "string" ? source.readPath : importFile(name);
+    [servers, files] = merge(servers, files, fileServers, fileFiles, urlFile);
+  }
+  return notices;
 }
 
 function getPiMcpConfigNotices(cwd: string, overridePath?: string): string[] {
@@ -933,6 +1012,18 @@ function mergeConfigs(base: McpConfig, next: McpConfig): McpConfig {
 // otherwise the original endpoint's credentials would be shipped to the new
 // url. See the SECURITY note in mergeServerMaps.
 const URL_BOUND_AUTH_FIELDS = ["headers", "bearerToken", "bearerTokenEnv", "bearerTokenStore", "requestHeadersCommand", "caFile"] as const;
+const CREDENTIAL_FIELDS = [...URL_BOUND_AUTH_FIELDS, "auth", "oauth"] as const;
+
+/** The credential fields of `existing` that mergeServerMaps drops for `definition`'s different url. */
+function droppedUrlBoundAuth(existing: ServerEntry, definition: ServerEntry): string[] {
+  if (typeof definition.url !== "string" || definition.url === existing.url) return [];
+  return CREDENTIAL_FIELDS.filter((field) => {
+    if (Object.hasOwn(definition, field)) return false;
+    if (field === "auth") return typeof existing.auth === "object";
+    if (field === "oauth") return existing.oauth !== undefined && existing.oauth !== false;
+    return existing[field] !== undefined;
+  });
+}
 
 function mergeServerMaps(
   base: Record<string, ServerEntry>,
