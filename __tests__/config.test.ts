@@ -2105,6 +2105,23 @@ describe("config discovery", () => {
     expect(getLegacyMcpMigrationNotices(project)).toEqual([]);
   });
 
+  it("names the OpenCode file that supplied a dropped credential, not the project file that inherits it", async () => {
+    const home = mkdtempSync(join(tmpdir(), "pi-mcp-dropped-opencode-home-"));
+    const project = realpathSync(mkdtempSync(join(tmpdir(), "pi-mcp-dropped-opencode-project-")));
+    process.env.HOME = home;
+    process.chdir(project);
+    const globalOpenCode = join(home, ".config", "opencode", "opencode.json");
+    const adapterPath = join(home, ".pi", "agent", "mcp-adapter.json");
+    writeJson(globalOpenCode, { mcp: { docs: { type: "remote", url: "https://docs.test/mcp", headers: { Authorization: "Bearer t" } } } });
+    writeJson(join(project, "opencode.json"), { mcp: { docs: { timeout: 5000 } } });
+    writeJson(adapterPath, { imports: ["opencode"], mcpServers: { docs: { url: "https://docs.test/v2/mcp" } } });
+
+    const { getLegacyMcpMigrationNotices } = await import("../config.ts");
+    expect(getLegacyMcpMigrationNotices(project)).toContain(
+      `"docs": ignoring headers from ${globalOpenCode}, because ${adapterPath} sets a different url for this server. Use one url, or set it next to that url.`,
+    );
+  });
+
   it("reports a key a project OpenCode entry inherits from the global file, against the global file", async () => {
     const home = mkdtempSync(join(tmpdir(), "pi-mcp-opencode-ignored-merge-home-"));
     const project = realpathSync(mkdtempSync(join(tmpdir(), "pi-mcp-opencode-ignored-merge-project-")));

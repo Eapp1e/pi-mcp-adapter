@@ -273,10 +273,10 @@ export function getLegacyMcpMigrationNotices(cwd = process.cwd(), overridePath?:
 /** server name -> credential field -> the file that supplied it. */
 type CredentialFiles = Map<string, Map<string, string>>;
 
-function credentialFiles(servers: Record<string, ServerEntry>, fileOf: (name: string) => string): CredentialFiles {
+function credentialFiles(servers: Record<string, ServerEntry>, fileOf: (name: string, field: string) => string): CredentialFiles {
   return new Map(Object.entries(servers).map(([name, definition]) => [
     name,
-    new Map(CREDENTIAL_FIELDS.filter((field) => definition[field] !== undefined).map((field) => [field, fileOf(name)])),
+    new Map(CREDENTIAL_FIELDS.filter((field) => definition[field] !== undefined).map((field) => [field, fileOf(name, field)])),
   ]));
 }
 
@@ -330,7 +330,9 @@ function getDroppedCredentialNotices(cwd: string, overridePath?: string): string
     // The same two merges as expandImports and mergeConfigs: the file's own entries over its imports,
     // then the file over the files before it.
     const imported = expandImports({ ...loaded, mcpServers: {} }, cwd);
-    const importFile = (name: string) => imported.serverSources.get(name)?.path ?? source.readPath;
+    // An OpenCode project entry can inherit a credential from the global file, so name the file per key.
+    const importFile = (name: string, field: string) =>
+      imported.keySources?.get(name)?.get(field) ?? imported.serverSources.get(name)?.path ?? source.readPath;
     const ownFile = () => source.readPath;
     const [fileServers, fileFiles] = merge(
       imported.config.mcpServers,
@@ -339,7 +341,7 @@ function getDroppedCredentialNotices(cwd: string, overridePath?: string): string
       credentialFiles(loaded.mcpServers, ownFile),
       ownFile,
     );
-    const urlFile = (name: string) => typeof loaded.mcpServers[name]?.url === "string" ? source.readPath : importFile(name);
+    const urlFile = (name: string) => typeof loaded.mcpServers[name]?.url === "string" ? source.readPath : importFile(name, "url");
     [servers, files] = merge(servers, files, fileServers, fileFiles, urlFile);
   }
   return notices;
@@ -549,6 +551,8 @@ interface ImportedServerSource {
 interface LoadedHostConfig {
   config: McpConfig;
   serverSources: Map<string, ImportedServerSource>;
+  /** OpenCode imports only: the file that last set each key of each server. */
+  keySources?: Map<string, Map<string, string>>;
 }
 
 export const MCP_CONFIG_SOURCE_METADATA = Symbol.for("pi-mcp-adapter/config-source-metadata");
@@ -1096,6 +1100,7 @@ function expandImports(config: McpConfig, cwd = process.cwd()): LoadedHostConfig
 
   const importedServers: Record<string, ServerEntry> = {};
   const serverSources = new Map<string, ImportedServerSource>();
+  const keySources = new Map<string, Map<string, string>>();
   for (const importKind of config.imports) {
     const imported = loadImportedConfig(importKind, cwd, `Failed to import MCP config from ${importKind}:`);
     if (!imported) continue;
@@ -1105,6 +1110,8 @@ function expandImports(config: McpConfig, cwd = process.cwd()): LoadedHostConfig
       if (!importedServers[name]) {
         importedServers[name] = definition;
         serverSources.set(name, imported.serverSources.get(name) ?? imported.source);
+        const keys = imported.keySources?.get(name);
+        if (keys) keySources.set(name, keys);
       }
     }
   }
@@ -1117,6 +1124,7 @@ function expandImports(config: McpConfig, cwd = process.cwd()): LoadedHostConfig
       mcpServers: mergeServerMaps(importedServers, config.mcpServers),
     },
     serverSources,
+    keySources,
   };
 }
 

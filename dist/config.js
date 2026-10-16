@@ -165,7 +165,7 @@ export function getLegacyMcpMigrationNotices(cwd = process.cwd(), overridePath) 
 function credentialFiles(servers, fileOf) {
     return new Map(Object.entries(servers).map(([name, definition]) => [
         name,
-        new Map(CREDENTIAL_FIELDS.filter((field) => definition[field] !== undefined).map((field) => [field, fileOf(name)])),
+        new Map(CREDENTIAL_FIELDS.filter((field) => definition[field] !== undefined).map((field) => [field, fileOf(name, field)])),
     ]));
 }
 /**
@@ -215,10 +215,11 @@ function getDroppedCredentialNotices(cwd, overridePath) {
         // The same two merges as expandImports and mergeConfigs: the file's own entries over its imports,
         // then the file over the files before it.
         const imported = expandImports({ ...loaded, mcpServers: {} }, cwd);
-        const importFile = (name) => imported.serverSources.get(name)?.path ?? source.readPath;
+        // An OpenCode project entry can inherit a credential from the global file, so name the file per key.
+        const importFile = (name, field) => imported.keySources?.get(name)?.get(field) ?? imported.serverSources.get(name)?.path ?? source.readPath;
         const ownFile = () => source.readPath;
         const [fileServers, fileFiles] = merge(imported.config.mcpServers, credentialFiles(imported.config.mcpServers, importFile), loaded.mcpServers, credentialFiles(loaded.mcpServers, ownFile), ownFile);
-        const urlFile = (name) => typeof loaded.mcpServers[name]?.url === "string" ? source.readPath : importFile(name);
+        const urlFile = (name) => typeof loaded.mcpServers[name]?.url === "string" ? source.readPath : importFile(name, "url");
         [servers, files] = merge(servers, files, fileServers, fileFiles, urlFile);
     }
     return notices;
@@ -924,6 +925,7 @@ function expandImports(config, cwd = process.cwd()) {
         return { config, serverSources: new Map() };
     const importedServers = {};
     const serverSources = new Map();
+    const keySources = new Map();
     for (const importKind of config.imports) {
         const imported = loadImportedConfig(importKind, cwd, `Failed to import MCP config from ${importKind}:`);
         if (!imported)
@@ -933,6 +935,9 @@ function expandImports(config, cwd = process.cwd()) {
             if (!importedServers[name]) {
                 importedServers[name] = definition;
                 serverSources.set(name, imported.serverSources.get(name) ?? imported.source);
+                const keys = imported.keySources?.get(name);
+                if (keys)
+                    keySources.set(name, keys);
             }
         }
     }
@@ -944,6 +949,7 @@ function expandImports(config, cwd = process.cwd()) {
             mcpServers: mergeServerMaps(importedServers, config.mcpServers),
         },
         serverSources,
+        keySources,
     };
 }
 function resolveImportCandidates(importKind, cwd) {
