@@ -66,12 +66,6 @@ export const KNOWN_SERVER_PRESETS = [
         entry: { url: "https://mcp.notion.com/mcp", auth: "oauth", protocolVersion: "auto" },
     },
     {
-        id: "github",
-        name: "GitHub",
-        summary: "Work with GitHub through your Copilot account.",
-        entry: { url: "https://api.githubcopilot.com/mcp", auth: "oauth", protocolVersion: "auto" },
-    },
-    {
         id: "chrome-devtools",
         name: "Chrome DevTools",
         summary: "Inspect and automate a local Chrome browser.",
