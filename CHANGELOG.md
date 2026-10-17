@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MCP sampling requests now use your current Pi thinking level, so a server that samples through a model or endpoint that requires reasoning no longer fails with "Reasoning is mandatory for this endpoint and cannot be disabled". Before, sampling always ran with thinking off. Thanks to [@bardic](https://github.com/bardic) for [#846](https://github.com/nicobailon/pi-mcp-adapter/issues/846).
 - The GitHub preset in `/mcp-adapter setup` now signs in with your GitHub CLI login (`gh auth token`) instead of MCP OAuth, which GitHub's sign-in server doesn't support for clients it hasn't registered, so `/mcp-auth github` always failed with "does not support dynamic client registration". Install `gh` and run `gh auth login` first. If you added the old preset, remove its `github` entry and add GitHub again from `/mcp-adapter setup`. Thanks to [@Milor123](https://github.com/Milor123) for [#841](https://github.com/nicobailon/pi-mcp-adapter/issues/841).
 - When one config file sets a different `url` for a server that another file gave headers or a token, the adapter still leaves those credentials out so they aren't sent to the new address, but it now tells you at startup which server, which settings and which two files are involved. Before, the credentials disappeared silently and the server failed with sign-in errors. Thanks to [@Milor123](https://github.com/Milor123) for [#841](https://github.com/nicobailon/pi-mcp-adapter/issues/841).
 

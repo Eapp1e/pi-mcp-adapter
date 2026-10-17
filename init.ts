@@ -171,6 +171,7 @@ export async function initializeMcp(
       ...(ui !== undefined ? { ui } : {}),
       modelRegistry,
       getCurrentModel: () => owner.isActive() ? ctx.model : undefined,
+      getThinkingLevel: () => owner.isActive() ? pi.getThinkingLevel() : "off",
       getSignal: () => owner.isActive()
         ? combineAbortSignals(owner.signal, ctx.signal)
         : owner.signal,
