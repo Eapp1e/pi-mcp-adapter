@@ -504,7 +504,8 @@ describe("cli System One key helper", () => {
   });
 });
 
-describe("cli doctor", () => {
+// Each test spawns the CLI, which can take seconds under load; match the doctor() child timeout.
+describe("cli doctor", { timeout: 30_000 }, () => {
   const cliPath = resolve("cli.js");
   const fixtureUrl = pathToFileURL(resolve("__tests__/fixtures/tools-only-server.mjs")).href;
   const servers: Server[] = [];
