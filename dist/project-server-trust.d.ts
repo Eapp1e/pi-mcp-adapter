@@ -11,6 +11,12 @@ export declare function hasProjectServerDefinitions(config: McpConfig): boolean;
 export declare function hashProjectServerDefinition(definition: ServerDefinition): string;
 export declare function canonicalProjectRoot(cwd: string): string;
 export declare function approveProjectServer(cwd: string, serverName: string, definition: ServerDefinition): void;
+/**
+ * After the adapter edits config on the user's behalf (a panel save), re-approve each named project
+ * server whose pre-edit definition was approved, so the edit does not revoke the approval. A server
+ * without a matching approval stays unapproved: an adapter edit never creates one.
+ */
+export declare function keepProjectServerApprovals(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">, before: McpConfig, after: McpConfig, serverNames: Iterable<string>): void;
 export declare function applyProjectServerTrust(loaded: LoadedMcpConfig, ctx: Pick<ExtensionContext, "cwd" | "hasUI" | "mode" | "ui" | "isProjectTrusted">): Promise<ProjectTrustResult>;
 export declare function applyProjectServerTrustToConfig(config: McpConfig, ctx: Pick<ExtensionContext, "cwd" | "hasUI" | "mode" | "ui" | "isProjectTrusted">): Promise<ProjectTrustResult>;
 /** Remove project-derived servers before an ExtensionContext exists. */
