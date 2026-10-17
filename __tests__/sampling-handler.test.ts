@@ -157,6 +157,22 @@ describe("sampling handler", () => {
     expect(mocks.streamSimple.mock.calls[0][2]).not.toHaveProperty("reasoning");
   });
 
+  it("falls back to complete without reasoning on Pi versions without streamSimple", async () => {
+    const { handleSamplingRequest } = await import("../sampling-handler.ts");
+    mocks.complete.mockReset().mockImplementation(() => mocks.result());
+    const result = await handleSamplingRequest(createOptions({
+      modelRegistry: { getAvailable: () => [model], complete: mocks.complete },
+      getThinkingLevel: () => "high",
+    }), createSamplingRequest({
+      messages: [{ role: "user", content: { type: "text", text: "Hello" } }],
+      maxTokens: 50,
+      metadata: { locale: "fr" },
+    }));
+
+    expect(result.content).toEqual({ type: "text", text: "Bonjour" });
+    expect(mocks.complete.mock.calls[0][2]).toEqual({ maxTokens: 50, metadata: { locale: "fr" } });
+  });
+
   it("requires UI approval unless auto-approve is enabled", async () => {
     const { handleSamplingRequest } = await import("../sampling-handler.ts");
 
