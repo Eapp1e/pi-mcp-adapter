@@ -36,7 +36,7 @@ import { findPiSignInImports, importPiSignIn } from "./pi-signin-import.ts";
 import { formatTerminalError, openPath, providerSignInMessage, resolveServerUrl, sanitizeTerminalText } from "./utils.ts";
 import { isAbortError } from "./runtime-owner.ts";
 import { resolveJevCredential } from "./jev-key-store.ts";
-import { describeProjectServerBlock } from "./project-server-trust.ts";
+import { describeProjectServerBlock, keepProjectServerApprovals } from "./project-server-trust.ts";
 
 function terminalHyperlink(label: string, url: string): string {
   return `\u001B]8;;${sanitizeTerminalText(url)}\u001B\\${sanitizeTerminalText(label)}\u001B]8;;\u001B\\`;
@@ -838,9 +838,11 @@ export async function openMcpPanel(
               }
             }
             if (!result.cancelled && result.changes.size > 0) {
+              const before = loadMcpConfig(configPath, ctx.cwd);
               writeDirectToolsConfig(result.changes, provenanceMap, config, () => {
                 directToolsFileWritten = true;
               });
+              keepProjectServerApprovals(ctx, before, loadMcpConfig(configPath, ctx.cwd), result.changes.keys());
               directToolsSaved = true;
               await onDirectToolsConfigChanged?.(result.changes);
               ctx.ui.notify("Direct tools updated for this session.", "info");

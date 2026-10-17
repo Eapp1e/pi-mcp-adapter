@@ -170,6 +170,49 @@ export function approveProjectServer(cwd: string, serverName: string, definition
   });
 }
 
+function isApproved(approvals: ApprovalStore, projectRoot: string, serverName: string, definition: ServerDefinition): boolean {
+  const definitionHash = hashProjectServerDefinition(definition);
+  return approvals.approvals.some(entry =>
+    entry.projectRoot === projectRoot && entry.serverName === serverName && entry.definitionHash === definitionHash);
+}
+
+function isProjectTrusted(ctx: Pick<ExtensionContext, "isProjectTrusted">): boolean {
+  try {
+    return ctx.isProjectTrusted();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * After the adapter edits config on the user's behalf (a panel save), re-approve each named project
+ * server whose pre-edit definition was approved, so the edit does not revoke the approval. Only a
+ * `directTools` change carries the approval over; any other difference, such as a concurrent edit to
+ * the file, still needs a new approval. A server without a matching approval stays unapproved: an
+ * adapter edit never creates one.
+ */
+export function keepProjectServerApprovals(
+  ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
+  before: McpConfig,
+  after: McpConfig,
+  serverNames: Iterable<string>,
+): void {
+  if (!isProjectTrusted(ctx)) return;
+  const projectServers = asLoadedConfig(after).projectServers;
+  const projectRoot = projectApprovalScope(ctx.cwd);
+  const approvals = loadApprovals();
+  for (const name of serverNames) {
+    const previous = before.mcpServers[name];
+    const next = after.mcpServers[name];
+    if (!previous || !next || !projectServers.has(name)) continue;
+    if (!isApproved(approvals, projectRoot, name, previous)) continue;
+    const { directTools: _previousDirectTools, ...previousRest } = previous;
+    const { directTools: _nextDirectTools, ...nextRest } = next;
+    if (hashProjectServerDefinition(previousRest) !== hashProjectServerDefinition(nextRest)) continue;
+    approveProjectServer(ctx.cwd, name, next);
+  }
+}
+
 function describeServer(definition: ServerDefinition): string {
   if (definition.command) {
     return [definition.command, ...(definition.args ?? [])].map(value => JSON.stringify(value)).join(" ");
@@ -187,12 +230,7 @@ export async function applyProjectServerTrust(
   const blockedServers = new Map<string, ProjectServerBlock>();
   if (loaded.projectServers.size === 0) return { config, blockedServers };
 
-  let projectTrusted = false;
-  try {
-    projectTrusted = ctx.isProjectTrusted();
-  } catch {
-    projectTrusted = false;
-  }
+  const projectTrusted = isProjectTrusted(ctx);
   // RPC sessions also have a UI, but Pi reads RPC input only after session_start, so a dialog here never resolves.
   const interactive = ctx.hasUI && ctx.mode === "tui";
   const projectRoot = projectApprovalScope(ctx.cwd);
@@ -201,9 +239,7 @@ export async function applyProjectServerTrust(
   for (const [name, source] of loaded.projectServers) {
     const definition = config.mcpServers[name];
     if (!definition || isServerDisabled(definition)) continue;
-    const definitionHash = hashProjectServerDefinition(definition);
-    const approved = approvals.approvals.some(entry =>
-      entry.projectRoot === projectRoot && entry.serverName === name && entry.definitionHash === definitionHash);
+    const approved = isApproved(approvals, projectRoot, name, definition);
     if (projectTrusted && (approved || (!interactive && loaded.projectServerPolicy === "allow"))) continue;
 
     let reason: ProjectServerBlockReason;
