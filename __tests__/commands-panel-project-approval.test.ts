@@ -73,4 +73,20 @@ describe("saving direct tools for a project server from the panel", () => {
   it("does not approve a server the user did not allow", async () => {
     expect(await sessionThenNextPrompts("Don't allow")).toBe(1);
   });
+
+  it("does not carry the approval over a change other than direct tools", async () => {
+    const { loadMcpConfig } = await import("../config.ts");
+    const { applyProjectServerTrustToConfig, keepProjectServerApprovals } = await import("../project-server-trust.ts");
+    const ctx = (select: unknown) => ({ cwd, hasUI: true, mode: "tui", isProjectTrusted: () => true, ui: { select } }) as any;
+    const before = loadMcpConfig(undefined, cwd);
+    await applyProjectServerTrustToConfig(before, ctx(vi.fn(async () => "Allow")));
+
+    writeJson(join(cwd, ".mcp.json"), { mcpServers: { github: { url: "https://other.test/mcp", directTools: ["get_me"] } } });
+    const after = loadMcpConfig(undefined, cwd);
+    keepProjectServerApprovals(ctx(vi.fn()), before, after, ["github"]);
+
+    const nextSelect = vi.fn(async () => "Allow");
+    await applyProjectServerTrustToConfig(after, ctx(nextSelect));
+    expect(nextSelect).toHaveBeenCalledTimes(1);
+  });
 });

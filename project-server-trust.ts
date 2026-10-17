@@ -186,8 +186,10 @@ function isProjectTrusted(ctx: Pick<ExtensionContext, "isProjectTrusted">): bool
 
 /**
  * After the adapter edits config on the user's behalf (a panel save), re-approve each named project
- * server whose pre-edit definition was approved, so the edit does not revoke the approval. A server
- * without a matching approval stays unapproved: an adapter edit never creates one.
+ * server whose pre-edit definition was approved, so the edit does not revoke the approval. Only a
+ * `directTools` change carries the approval over; any other difference, such as a concurrent edit to
+ * the file, still needs a new approval. A server without a matching approval stays unapproved: an
+ * adapter edit never creates one.
  */
 export function keepProjectServerApprovals(
   ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
@@ -203,7 +205,11 @@ export function keepProjectServerApprovals(
     const previous = before.mcpServers[name];
     const next = after.mcpServers[name];
     if (!previous || !next || !projectServers.has(name)) continue;
-    if (isApproved(approvals, projectRoot, name, previous)) approveProjectServer(ctx.cwd, name, next);
+    if (!isApproved(approvals, projectRoot, name, previous)) continue;
+    const { directTools: _previousDirectTools, ...previousRest } = previous;
+    const { directTools: _nextDirectTools, ...nextRest } = next;
+    if (hashProjectServerDefinition(previousRest) !== hashProjectServerDefinition(nextRest)) continue;
+    approveProjectServer(ctx.cwd, name, next);
   }
 }
 
