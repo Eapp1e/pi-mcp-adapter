@@ -26,7 +26,7 @@ import {
 } from "./config.ts";
 import { markKeepAliveAfterConnect, notifyToolMetadataUpdated, updateMetadataCache, updateStatusBar, getFailureAgeSeconds, getFailureMessage, clearFailure, recordFailure } from "./init.ts";
 import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
-import { loadMetadataCache, reconstructPromptMetadata } from "./metadata-cache.ts";
+import { loadMetadataCache, reconstructPromptMetadata, withSessionMetadata } from "./metadata-cache.ts";
 import { buildToolMetadata } from "./tool-metadata.ts";
 import { supportsOAuth, authenticate, removeAuth, type McpOAuthRuntime } from "./mcp-auth-flow.ts";
 import { getAuthStorageOptions, inspectAuthForUrl } from "./mcp-auth.ts";
@@ -792,7 +792,7 @@ export async function openMcpPanel(
   }
 
   const config = state.config;
-  const cache = loadMetadataCache();
+  const cache = withSessionMetadata(loadMetadataCache(), config, state.sessionMetadata);
   const configPath = pi.getFlag("mcp-config") as string | undefined ?? configOverridePath;
   const provenanceMap = getServerProvenance(configPath, ctx.cwd);
   const { lines: noticeLines, fingerprint } = buildSharedConfigNoticeLines(configPath, ctx.cwd);

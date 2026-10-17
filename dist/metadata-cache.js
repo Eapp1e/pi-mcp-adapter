@@ -31,6 +31,25 @@ export function loadMetadataCache() {
         return null;
     }
 }
+/**
+ * The cache plus what this session already listed. Private or zero-TTL listings are never
+ * persisted as valid, but this session's own listing still counts for this session.
+ */
+export function withSessionMetadata(cache, config, sessionMetadata) {
+    if (!sessionMetadata?.size)
+        return cache;
+    const servers = { ...cache?.servers };
+    for (const [serverName, entry] of sessionMetadata) {
+        const definition = config.mcpServers[serverName];
+        if (!definition || isServerDisabled(definition))
+            continue;
+        if (entry.configHash !== computeServerHash(definition))
+            continue;
+        const { ttlMs: _sessionTtl, cacheScope: _sessionScope, ...sessionEntry } = entry;
+        servers[serverName] = { ...sessionEntry, cachedAt: Date.now() };
+    }
+    return { version: CACHE_VERSION, servers };
+}
 export function saveMetadataCache(cache, options = {}) {
     updateMetadataCacheFile(servers => {
         const next = { ...servers };
