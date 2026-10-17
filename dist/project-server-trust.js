@@ -51,7 +51,8 @@ export function hashProjectServerDefinition(definition) {
 }
 export function canonicalProjectRoot(cwd) {
     try {
-        return realpathSync(cwd);
+        // The native realpath returns the on-disk casing, so `C:\Users\Me` and `c:\users\me` share approvals.
+        return realpathSync.native(cwd);
     }
     catch {
         return resolve(cwd);
@@ -87,9 +88,9 @@ function linkedWorktreeRepoScope(dotGit) {
         const pointer = /^gitdir: (.+)$/m.exec(readFileSync(dotGit, "utf8"))?.[1]?.trim();
         if (!pointer)
             return undefined;
-        const adminDir = realpathSync(resolve(dirname(dotGit), pointer));
+        const adminDir = realpathSync.native(resolve(dirname(dotGit), pointer));
         const backLink = readFileSync(join(adminDir, "gitdir"), "utf8").trim();
-        if (realpathSync(resolve(adminDir, backLink)) !== realpathSync(dotGit))
+        if (realpathSync.native(resolve(adminDir, backLink)) !== realpathSync.native(dotGit))
             return undefined;
         const commonDir = dirname(dirname(adminDir));
         const bare = /^\s*bare\s*=\s*(true|yes|on|1)\s*$/im.test(readFileSync(join(commonDir, "config"), "utf8"));
