@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `pi --mcp-project-servers allow` starts a trusted project's MCP servers without the approval prompt, for that process only. Scripts that open interactive Pi sessions in new git worktrees no longer stall on a prompt nobody sees when a branch changes `.mcp.json`. Untrusted projects stay blocked, and a hand-typed `pi` still asks. Thanks to [@woksin](https://github.com/woksin) for [#852](https://github.com/nicobailon/pi-mcp-adapter/issues/852).
+- MCP servers that ask for roots now get the Pi session directory, as they do with Pi's built-in MCP. Servers that scope their work to the client's workspace, such as file and code-search servers, now see the project you're in. The official filesystem server replaces the directories in its args with these roots; set `"roots": false` on its entry to keep them.
 
 ## [5.3.2] - 2026-10-17
 

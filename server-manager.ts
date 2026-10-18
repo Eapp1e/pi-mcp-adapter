@@ -1,5 +1,7 @@
 import { mkdirSync, statSync } from "node:fs";
 import { BlockList, isIP } from "node:net";
+import { basename } from "node:path";
+import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import {
   Client,
@@ -385,7 +387,7 @@ export class McpServerManager {
   private providerToken: ((provider: string) => Promise<string | undefined>) | undefined;
   private stopped = false;
 
-  /** Default cwd for stdio servers without an explicit config `cwd`. */
+  /** Session cwd: the root sent to servers, and the default cwd for stdio servers without a config `cwd`. */
   constructor(private readonly defaultCwd?: string) {}
 
   setSamplingConfig(config: ServerSamplingConfig | undefined): void {
@@ -1308,6 +1310,7 @@ export class McpServerManager {
             requestTimeoutMs: this.getResolvedRequestTimeoutMs(definition),
             clientInfo: { name: `pi-mcp-${name}`, version: "1.0.0" },
             clientCapabilities: this.buildClientCapabilities(definition),
+            roots: this.rootsFor(definition),
             ...(this.elicitationConfig
               ? {
                   onElicitation: (request: Parameters<typeof handleElicitationRequest>[1], signal?: AbortSignal) =>
@@ -1456,6 +1459,7 @@ export class McpServerManager {
         ? {}
         : { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [RESOURCE_MIME_TYPE] } } }),
       ...(this.samplingConfig ? { sampling: {} } : {}),
+      ...(this.rootsFor(definition) ? { roots: {} } : {}),
       ...(this.elicitationConfig
         ? {
             elicitation: {
@@ -1465,6 +1469,12 @@ export class McpServerManager {
           }
         : {}),
     };
+  }
+
+  /** The session directory as the server's only root, unless there is no session cwd or the server opted out. */
+  private rootsFor(definition: ServerDefinition) {
+    if (this.defaultCwd === undefined || definition.roots === false) return undefined;
+    return [{ uri: pathToFileURL(this.defaultCwd).href, name: basename(this.defaultCwd) }];
   }
 
   private createClient(serverName: string, definition: ServerDefinition): Client {
@@ -1497,6 +1507,8 @@ export class McpServerManager {
       },
     );
     clientMetadata.set(client, () => (client as AdapterClient).requestMetadata());
+    const roots = this.rootsFor(definition);
+    if (roots) client.setRequestHandler("roots/list", () => ({ roots }));
     if (this.samplingConfig) {
       registerSamplingHandler(client, { ...this.samplingConfig, serverName });
     }

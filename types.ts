@@ -495,6 +495,8 @@ export interface ServerEntry {
   approveTools?: boolean | "destructive" | string[];
   /** Set to false to tell this server the host has no MCP App UI; its tools run and return results inline. */
   openUi?: boolean;
+  /** Set to false to not send this server the session directory as its root. */
+  roots?: boolean;
   // Debug
   debug?: boolean;  // Show server stderr (default: false)
   /** Enable metadata-only JSONL protocol tracing for this server. */

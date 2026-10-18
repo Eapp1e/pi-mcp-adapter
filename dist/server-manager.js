@@ -1,5 +1,7 @@
 import { mkdirSync, statSync } from "node:fs";
 import { BlockList, isIP } from "node:net";
+import { basename } from "node:path";
+import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { Client, SdkError, SdkErrorCode, SdkHttpError, SseError, SSEClientTransport, StreamableHTTPClientTransport, UnauthorizedError, RegistrationRejectedError, } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
@@ -237,7 +239,7 @@ export class McpServerManager {
     traceWriter;
     providerToken;
     stopped = false;
-    /** Default cwd for stdio servers without an explicit config `cwd`. */
+    /** Session cwd: the root sent to servers, and the default cwd for stdio servers without a config `cwd`. */
     constructor(defaultCwd) {
         this.defaultCwd = defaultCwd;
     }
@@ -1025,6 +1027,7 @@ export class McpServerManager {
                         requestTimeoutMs: this.getResolvedRequestTimeoutMs(definition),
                         clientInfo: { name: `pi-mcp-${name}`, version: "1.0.0" },
                         clientCapabilities: this.buildClientCapabilities(definition),
+                        roots: this.rootsFor(definition),
                         ...(this.elicitationConfig
                             ? {
                                 onElicitation: (request, signal) => handleElicitationRequest({
@@ -1168,6 +1171,7 @@ export class McpServerManager {
                 ? {}
                 : { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [RESOURCE_MIME_TYPE] } } }),
             ...(this.samplingConfig ? { sampling: {} } : {}),
+            ...(this.rootsFor(definition) ? { roots: {} } : {}),
             ...(this.elicitationConfig
                 ? {
                     elicitation: {
@@ -1177,6 +1181,12 @@ export class McpServerManager {
                 }
                 : {}),
         };
+    }
+    /** The session directory as the server's only root, unless there is no session cwd or the server opted out. */
+    rootsFor(definition) {
+        if (this.defaultCwd === undefined || definition.roots === false)
+            return undefined;
+        return [{ uri: pathToFileURL(this.defaultCwd).href, name: basename(this.defaultCwd) }];
     }
     createClient(serverName, definition) {
         const capabilities = this.buildClientCapabilities(definition);
@@ -1205,6 +1215,9 @@ export class McpServerManager {
             },
         });
         clientMetadata.set(client, () => client.requestMetadata());
+        const roots = this.rootsFor(definition);
+        if (roots)
+            client.setRequestHandler("roots/list", () => ({ roots }));
         if (this.samplingConfig) {
             registerSamplingHandler(client, { ...this.samplingConfig, serverName });
         }
