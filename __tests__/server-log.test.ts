@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServerManager } from "../server-manager.ts";
+import { appendServerLogMessage } from "../server-log.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/logging-server.mjs", import.meta.url));
 
@@ -29,5 +30,14 @@ describe("server log messages", () => {
 
     await expect.poll(() => readFileSync(join(agentDir!, "mcp.log"), "utf8"))
       .toMatch(/^\S+Z \[db-server\] warning db: pool exhausted\n {4}retrying\n$/);
+  });
+
+  it("keeps a server's logger and data from starting a line of their own", () => {
+    agentDir = mkdtempSync(join(tmpdir(), "server-log-agent-"));
+    const path = join(agentDir, "mcp.log");
+
+    appendServerLogMessage(path, "real", { level: "info", logger: "db\n2026-10-18T00:00:00.000Z [other]", data: "a\rb" });
+
+    expect(readFileSync(path, "utf8")).toMatch(/^\S+Z \[real\] info db 2026-10-18T00:00:00\.000Z \[other\]: a\n {4}b\n$/);
   });
 });

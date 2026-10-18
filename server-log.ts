@@ -10,8 +10,9 @@ const MAX_LOG_BYTES = 5 * 1024 * 1024;
  * Pi's built-in MCP uses. Several Pi processes share the file, so each message is one synchronous append.
  */
 export function appendServerLogMessage(path: string, serverName: string, params: LoggingMessageNotificationParams): void {
-  const source = params.logger ? ` ${params.logger}:` : "";
-  const text = (typeof params.data === "string" ? params.data : JSON.stringify(params.data)).replace(/\r?\n/g, "\n    ");
+  // Servers control logger and data; neither may start a line that looks like another server's entry.
+  const source = params.logger ? ` ${params.logger.replace(/\p{Cc}/gu, " ")}:` : "";
+  const text = (typeof params.data === "string" ? params.data : JSON.stringify(params.data)).replace(/\r\n|\r|\n/g, "\n    ");
   const line = `${new Date().toISOString()} [${serverName}] ${params.level}${source} ${text}\n`;
   try {
     mkdirSync(dirname(path), { recursive: true });
