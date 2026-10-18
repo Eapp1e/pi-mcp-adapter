@@ -56,6 +56,8 @@ import {
 } from "./mcp-auth.ts";
 import { getBearerTokenForUrl } from "./mcp-bearer-store.ts";
 import { handleSamplingRequest, registerSamplingHandler, type ServerSamplingConfig } from "./sampling-handler.ts";
+import { appendServerLogMessage } from "./server-log.ts";
+import { getAgentPath } from "./agent-dir.ts";
 import {
   handleElicitationRequest,
   handleUrlElicitation,
@@ -1509,6 +1511,10 @@ export class McpServerManager {
     clientMetadata.set(client, () => (client as AdapterClient).requestMetadata());
     const roots = this.rootsFor(definition);
     if (roots) client.setRequestHandler("roots/list", () => ({ roots }));
+    let logPath: string | undefined;
+    client.setNotificationHandler("notifications/message", notification => {
+      appendServerLogMessage(logPath ??= getAgentPath("mcp.log"), serverName, notification.params);
+    });
     if (this.samplingConfig) {
       registerSamplingHandler(client, { ...this.samplingConfig, serverName });
     }
