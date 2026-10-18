@@ -18,6 +18,8 @@ import { explainRegistrationRejection, extractOAuthConfig, supportsOAuth } from 
 import { captureOAuthAuthority, inspectAuthForUrl, invalidateAuthEntryCache, } from "./mcp-auth.js";
 import { getBearerTokenForUrl } from "./mcp-bearer-store.js";
 import { handleSamplingRequest, registerSamplingHandler } from "./sampling-handler.js";
+import { appendServerLogMessage } from "./server-log.js";
+import { getAgentPath } from "./agent-dir.js";
 import { handleElicitationRequest, handleUrlElicitation, registerElicitationHandler, } from "./elicitation-handler.js";
 import { attachTaskSession } from "./mcp-tasks.js";
 import { interpolateEnvVars, expandHomePath, providerAuthUrlError, resolveBearerToken, resolveCommandSecretsRecord, resolveConfigPath, resolveServerUrl, } from "./utils.js";
@@ -1218,6 +1220,10 @@ export class McpServerManager {
         const roots = this.rootsFor(definition);
         if (roots)
             client.setRequestHandler("roots/list", () => ({ roots }));
+        let logPath;
+        client.setNotificationHandler("notifications/message", notification => {
+            appendServerLogMessage(logPath ??= getAgentPath("mcp.log"), serverName, notification.params);
+        });
         if (this.samplingConfig) {
             registerSamplingHandler(client, { ...this.samplingConfig, serverName });
         }
