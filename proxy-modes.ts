@@ -1588,6 +1588,7 @@ export async function executeCall(
   );
 
   const outputGuardOptions = resolveMcpOutputGuardOptions(state.config.settings);
+  const appendStructuredContent = state.config.mcpServers[serverName]?.appendStructuredContent !== false;
   const recoverAuthConnection = async () => {
     const current = state.manager.getConnection(serverName);
     if (current?.status === "connected") return current;
@@ -1729,7 +1730,7 @@ export async function executeCall(
 
     if (uiResourceUri) {
       if (result.isError) {
-        const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal);
+        const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal, appendStructuredContent);
         const outputContent = content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }];
         const guarded = await guardMcpOutput(outputContent, { ...outputGuardOptions, prefix: "Error: ", emptyTextFallback: "Tool execution failed", rawMcpResult: result });
         return {
@@ -1738,7 +1739,7 @@ export async function executeCall(
         };
       }
 
-      const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal);
+      const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal, appendStructuredContent);
       const outputContent = content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }];
       const uiSummary = summarizeUiSessionResult(uiSession);
       const guarded = await guardMcpOutput(outputContent, { ...outputGuardOptions, suffix: `\n\n${uiSummary.message}`, rawMcpResult: result });
@@ -1756,7 +1757,7 @@ export async function executeCall(
     }
 
     if (result.isError) {
-      const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal);
+      const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal, appendStructuredContent);
       const outputContent = content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }];
       const guarded = await guardMcpOutput(outputContent, { ...outputGuardOptions, prefix: "Error: ", emptyTextFallback: "Tool execution failed", rawMcpResult: result });
       return {
@@ -1765,7 +1766,7 @@ export async function executeCall(
       };
     }
 
-    const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal);
+    const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal, appendStructuredContent);
     const outputContent = content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }];
     // Runtime event-bus callers ("script" origin) are extensions, not the model, so they get no hint.
     const pipeHint = scriptPipeHint(origin !== "script" && state.scriptTool, outputContent);

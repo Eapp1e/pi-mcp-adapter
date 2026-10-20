@@ -223,6 +223,7 @@ export function createDirectToolExecutor(
     const requestOptions = state.manager.getRequestOptions?.(spec.serverName, ownedSignal) ?? (ownedSignal ? { signal: ownedSignal } : undefined);
 
     const outputGuardOptions = resolveMcpOutputGuardOptions(state.config.settings);
+    const appendStructuredContent = state.config.mcpServers[spec.serverName]?.appendStructuredContent !== false;
     const recoverAuthConnection = async () => {
       const current = state.manager.getConnection(spec.serverName);
       if (current?.status === "connected") return current;
@@ -351,7 +352,7 @@ export function createDirectToolExecutor(
       if (!result.isError) recordOutput(result as Record<string, unknown>);
 
       if (result.isError) {
-        const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal);
+        const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal, appendStructuredContent);
         const outputContent = content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }];
         const guarded = await guardMcpOutput(outputContent, {
           ...outputGuardOptions,
@@ -366,7 +367,7 @@ export function createDirectToolExecutor(
         };
       }
 
-      const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal);
+      const content = resolveMcpResultContent(result as Record<string, unknown>, state.owner?.signal, appendStructuredContent);
       const outputContent = content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }];
       if (hasUi) {
         const uiSummary = summarizeUiSessionResult(uiSession);
