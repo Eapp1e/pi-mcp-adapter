@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.4.0] - 2026-10-19
+
+### Highlights
+
+- Scripts that open Pi in a new git worktree can start a trusted project's MCP servers with `pi --mcp-project-servers allow` instead of hanging on an approval prompt nobody sees.
+- MCP servers now see the project you're working in, the same way Pi's built-in MCP shows it to them.
+- A server that sends the same data twice in each result can be told to send it once, which saves context on every call.
+- When a remote server misbehaves, its log messages are now saved to `~/.pi/agent/mcp.log` instead of being thrown away.
+
 ### Added
 
 - `pi --mcp-project-servers allow` starts a trusted project's MCP servers without the approval prompt, for that process only. Scripts that open interactive Pi sessions in new git worktrees no longer stall on a prompt nobody sees when a branch changes `.mcp.json`. Untrusted projects stay blocked, and a hand-typed `pi` still asks. Thanks to [@woksin](https://github.com/woksin) for [#852](https://github.com/nicobailon/pi-mcp-adapter/issues/852).
