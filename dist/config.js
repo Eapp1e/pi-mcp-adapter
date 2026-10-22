@@ -9,7 +9,7 @@ import { getAgentPluginSummaries, loadAgentPluginConfigs } from "./agent-plugin-
 import { cloneBuiltInAgentPluginEntry, isBuiltInAgentPlugin, mergeBuiltInAgentPluginEntries } from "./agent-plugin-provenance.js";
 import { loadClaudePluginBundles } from "./claude-plugin-loader.js";
 import { loadPackageMcpConfigs } from "./package-mcp-loader.js";
-import { validateJevSettings } from "./jev-client.js";
+import { REMOVED_JEV_KEYS, validateJevSettings } from "./jev-client.js";
 import { formatServerNamespace, isServerDisabled } from "./types.js";
 import { getMissingEnvVars, parseJsonWithComments, providerAuthUrlError, stripUtf8Bom, toStringRecord } from "./utils.js";
 const GENERIC_GLOBAL_CONFIG_PATH = join(homedir(), ".config", "mcp", "mcp.json");
@@ -168,7 +168,28 @@ export function getLegacyMcpMigrationNotices(cwd = process.cwd(), overridePath) 
         ...getPiMcpConfigNotices(cwd, overridePath),
         ...getOpenCodeImportNotices(cwd, overridePath),
         ...getDroppedCredentialNotices(cwd, overridePath),
+        ...getRemovedScriptSettingNotices(cwd, overridePath),
     ];
+}
+/** Settings that only configured mcpScript, besides the jev ones in REMOVED_JEV_KEYS. They still load, and do nothing. */
+const REMOVED_SCRIPT_SETTINGS = ["scriptMode", "scriptSkill"];
+/** One notice per config file that still sets a setting mcpScript's removal left without effect. */
+function getRemovedScriptSettingNotices(cwd, overridePath) {
+    return getConfigSources(overridePath, cwd).flatMap((source) => {
+        const settings = readSourceConfig(source.id, source.readPath)?.settings;
+        if (!settings)
+            return [];
+        const jev = settings.jev && typeof settings.jev === "object" ? settings.jev : {};
+        const keys = [
+            ...REMOVED_SCRIPT_SETTINGS.filter((key) => settings[key] !== undefined).map((key) => `settings.${key}`),
+            ...[...REMOVED_JEV_KEYS].filter((key) => jev[key] !== undefined).map((key) => `settings.jev.${key}`),
+        ];
+        if (keys.length === 0)
+            return [];
+        const [verb, pronoun] = keys.length === 1 ? ["does", "it"] : ["do", "them"];
+        const named = keys.length > 2 ? `${keys.slice(0, -1).join(", ")} and ${keys.at(-1)}` : keys.join(" and ");
+        return [`${source.readPath}: pi-mcp-adapter no longer has mcpScript, so ${named} ${verb} nothing. Remove ${pronoun}, and add "+codemode" to defaultTools in Pi's settings to script MCP calls with Pi's codemode.`];
+    });
 }
 function credentialFiles(servers, fileOf) {
     return new Map(Object.entries(servers).map(([name, definition]) => [
@@ -1660,7 +1681,9 @@ export function writeJevSemanticSearchConfig(overridePath, cwd, allowedServers, 
     if (currentJev !== undefined && currentJev !== false && !isRecord(currentJev)) {
         throw new Error(`Failed to update Jev settings at ${filePath}: settings.jev must be an object or false`);
     }
-    const jev = isRecord(effectiveJev) ? effectiveJev : isRecord(currentJev) ? currentJev : {};
+    const source = isRecord(effectiveJev) ? effectiveJev : isRecord(currentJev) ? currentJev : {};
+    // Settings of the removed jev.evaluate() would only earn the file a migration notice.
+    const jev = Object.fromEntries(Object.entries(source).filter(([key]) => !REMOVED_JEV_KEYS.has(key)));
     const nextServers = [...new Set(allowedServers)].sort((a, b) => a.localeCompare(b));
     const nextJev = { ...jev, semanticSearch: true, allowedServers: nextServers };
     validateJevSettings(nextJev);

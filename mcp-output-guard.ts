@@ -14,7 +14,6 @@ import type { ContentBlock, McpSettings } from "./types.ts";
 export const DEFAULT_MCP_OUTPUT_MAX_BYTES = DEFAULT_MAX_BYTES;
 export const DEFAULT_MCP_OUTPUT_MAX_LINES = DEFAULT_MAX_LINES;
 export const DEFAULT_MCP_DETAILS_MAX_BYTES = 16 * 1024;
-const SCRIPT_PIPE_HINT_MIN_BYTES = 8 * 1024;
 
 const CONTENT_SUMMARY_LIMIT = 20;
 const KEY_PREVIEW_LIMIT = 20;
@@ -64,8 +63,6 @@ export interface McpOutputGuardOptions {
   enabled?: boolean;
   prefix?: string;
   suffix?: string;
-  /** Optional guidance appended when it fits the output limits. */
-  footer?: string;
   emptyTextFallback?: string;
   maxBytes?: number;
   maxLines?: number;
@@ -96,18 +93,6 @@ export function resolveMcpOutputGuardOptions(settings?: McpSettings): Pick<McpOu
   };
 }
 
-/**
- * Models retype large results into the next call's arguments unless told otherwise at the moment
- * they see the result; the same wording in tool descriptions did not change that.
- */
-export function scriptPipeHint(scriptTool: boolean | undefined, content: ContentBlock[]): { footer?: string } {
-  if (scriptTool !== true) return {};
-  const bytes = content.reduce((total, block) => total + (block.type === "text" ? byteLength(block.text) : 0), 0);
-  return bytes >= SCRIPT_PIPE_HINT_MIN_BYTES
-    ? { footer: "\n\n[Use mcpScript to pass this result to another MCP call without copying it through the conversation.]" }
-    : {};
-}
-
 /** Spread helper for tool-result details: includes mcpResult/outputGuard only when present. */
 export function guardedMcpDetails(guarded: GuardedMcpOutput): Record<string, unknown> {
   return {
@@ -130,7 +115,6 @@ export async function guardMcpOutput(
   const detailsMaxBytes = options.detailsMaxBytes ?? DEFAULT_MCP_DETAILS_MAX_BYTES;
   const prefix = options.prefix ?? "";
   const suffix = options.suffix ?? "";
-  const footer = options.footer ?? "";
 
   const normalizedContent = withEmptyTextFallback(
     content.length > 0
@@ -141,7 +125,7 @@ export async function guardMcpOutput(
 
   if (options.enabled === false) {
     return {
-      content: addAffixes(normalizedContent, prefix, `${suffix}${footer}`),
+      content: addAffixes(normalizedContent, prefix, suffix),
       ...(options.rawMcpResult !== undefined ? { mcpResult: options.rawMcpResult } : {}),
     };
   }
@@ -152,18 +136,15 @@ export async function guardMcpOutput(
     .map((block) => (block as { text: string }).text)
     .join("\n");
   const composedOutput = `${prefix}${textOutput}${suffix}`;
-  const truncation = truncateHead(`${composedOutput}${footer}`, { maxBytes, maxLines });
+  const truncation = truncateHead(composedOutput, { maxBytes, maxLines });
 
-  let guardedContent: ContentBlock[] = addAffixes(normalizedContent, prefix, `${suffix}${footer}`);
+  let guardedContent: ContentBlock[] = addAffixes(normalizedContent, prefix, suffix);
   let outputGuard: McpOutputGuardDetails | undefined;
 
   if (truncation.truncated) {
     const { path: fullOutputPath, error: writeError } = await saveArtifact("output", composedOutput);
     const initialNotice = formatTruncationNotice(truncation, fullOutputPath, writeError);
-    // Footers are optional guidance: drop one that would not fit beside the notice rather than exceed the limits.
-    const noticeWithFooter = textStats(`\n\n${initialNotice}${footer}`);
-    const keptFooter = noticeWithFooter.bytes < maxBytes && noticeWithFooter.lines < maxLines ? footer : "";
-    const previewBudget = reserveBudget(maxBytes, maxLines, `${initialNotice}${keptFooter}`);
+    const previewBudget = reserveBudget(maxBytes, maxLines, initialNotice);
     const preview = truncateHead(composedOutput, {
       maxBytes: previewBudget.maxBytes,
       maxLines: previewBudget.maxLines,
@@ -173,7 +154,7 @@ export async function guardMcpOutput(
       fullOutputPath,
       writeError,
     );
-    const finalText = `${preview.content}\n\n${notice}${keptFooter}`;
+    const finalText = `${preview.content}\n\n${notice}`;
     const finalStats = textStats(finalText);
 
     guardedContent = [{ type: "text" as const, text: finalText }, ...imageBlocks];

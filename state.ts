@@ -47,6 +47,11 @@ export interface McpExtensionState {
   programmaticConfig?: boolean;
   /** Session-scoped notices for legacy mcp.json files the adapter ignores. */
   migrationNotices?: string[];
+  /**
+   * Whether the result of the tool call `toolCallId` goes to a script rather than to the model, so
+   * it skips the output guard. Unset, or false for an unknown call, keeps the guard.
+   */
+  deliversToScript?: (toolCallId: string | undefined) => boolean;
   /** Install validations must not publish durable cache entries before config persistence. */
   provisionalInstalls?: Set<string>;
   oauthRuntime: McpOAuthRuntime;
@@ -60,8 +65,6 @@ export interface McpExtensionState {
   observedOutputs?: WeakMap<ServerDefinition, Map<string, ObservedOutput>>;
   /** Configured project servers disabled by trust or approval policy for this session. */
   blockedProjectServers?: Map<string, ProjectServerBlock>;
-  /** mcpScript is registered. Fixed when Pi loads the adapter, so a session's own config cannot change it. */
-  scriptTool?: boolean;
   /** Runtime-only server grants. Never persisted or restored from session entries. */
   approvedServers?: Map<string, { definition: ServerDefinition; hash: string }>;
   /** Optional active-session sink for approval decisions. */
