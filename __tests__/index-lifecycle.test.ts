@@ -55,6 +55,7 @@ const mocks = vi.hoisted(() => ({
   executeSearch: vi.fn(),
   executeStatus: vi.fn(),
   executeUiMessages: vi.fn(),
+  resolveDescribeTarget: vi.fn((): unknown => ({ error: {} })),
   coreModuleGate: null as Promise<void> | null,
   oauthModuleGate: null as Promise<void> | null,
   coreModuleStarted: vi.fn(),
@@ -108,6 +109,7 @@ vi.mock("../config.ts", () => ({
   discoverConfiguredClaudePluginSkills: mocks.discoverConfiguredClaudePluginSkills,
   resolveConfiguredClaudePluginMcp: mocks.resolveConfiguredClaudePluginMcp,
   getLegacyMcpMigrationNotices: mocks.getLegacyMcpMigrationNotices,
+  getPiMcpAuthPath: () => "/nonexistent/pi-mcp-auth.json",
   setPiMcpConfigEnabled: mocks.setPiMcpConfigEnabled,
   getPiGlobalConfigPath: mocks.getPiGlobalConfigPath,
   getProjectConfigPath: mocks.getProjectConfigPath,
@@ -161,6 +163,7 @@ vi.mock("../proxy-modes.ts", async () => {
   executeList: mocks.executeList,
   executeSearch: mocks.executeSearch,
   executeStatus: mocks.executeStatus,
+  resolveDescribeTarget: mocks.resolveDescribeTarget,
   executeUiMessages: mocks.executeUiMessages,
   };
 });
@@ -2730,6 +2733,24 @@ describe("mcpAdapter session lifecycle", () => {
     expect(mocks.executeStatus).toHaveBeenCalledWith(expect.objectContaining({ migrationNotices: [notice] }));
   });
 
+  it("warns at session start about script tools that were not loaded, apart from the migration notices", async () => {
+    const issue = '/project/.pi/mcp-adapter.json: script tool "Bad" was not loaded — its name must start with a lowercase letter.';
+    const state = createState();
+    // What initializeMcp found when it loaded the config files.
+    state.scriptToolLoadIssues = [issue];
+    mocks.initializeMcp.mockResolvedValue(state);
+    const { api, handlers } = await loadAdapter();
+    const ui = { notify: vi.fn() };
+
+    await handlers.get("session_start")?.({}, { hasUI: true, ui, cwd: "/project" });
+    await vi.waitFor(() => expect(ui.notify).toHaveBeenCalledWith(issue, "warning"));
+    expect(ui.notify).toHaveBeenCalledTimes(1);
+    expect(ui.notify).toHaveBeenCalledWith(issue, "warning");
+
+    await registeredTool(api, "mcp").execute("status", {});
+    expect(mocks.executeStatus).toHaveBeenCalledWith(expect.objectContaining({ migrationNotices: [], scriptToolIssues: [issue] }));
+  });
+
   it("uses status notifications instead of ambient panels in memory-config mode", async () => {
     const state = createState();
     mocks.initializeMcp.mockResolvedValue(state);
@@ -4368,7 +4389,7 @@ describe("directTools: \"search\" — registered inactive, activated by search o
       return () => [...active];
     }
 
-    async function bootPi099(specs?: unknown[], config: Record<string, any> = searchConfig, pi099 = true, setup?: (api: any) => void) {
+    async function bootPi099(specs?: unknown[], config: Record<string, any> = searchConfig, pi099 = true, setup?: (api: any) => void, sessionCtx: Record<string, unknown> = {}) {
       if (specs) mocks.resolveDirectTools.mockReturnValue(specs);
       const state = createState();
       state.config = config;
@@ -4383,7 +4404,7 @@ describe("directTools: \"search\" — registered inactive, activated by search o
       const activeTools = trackPiToolExposure(api);
       setup?.(api);
       mcpAdapter(api);
-      await handlers.get("session_start")?.({}, {});
+      await handlers.get("session_start")?.({}, sessionCtx);
       await Promise.resolve();
       await Promise.resolve();
       return { api, handlers, state, activeTools, proxyTool: registeredTool(api, "mcp") };
@@ -4510,7 +4531,7 @@ describe("directTools: \"search\" — registered inactive, activated by search o
       annotations: { title: "Echo", destructiveHint: true },
     };
 
-    async function bootCached(servers: Record<string, [Record<string, unknown>, unknown[]]>, settings: Record<string, unknown> = {}, pi099 = true, setup?: (api: any) => void) {
+    async function bootCached(servers: Record<string, [Record<string, unknown>, unknown[]]>, settings: Record<string, unknown> = {}, pi099 = true, setup?: (api: any) => void, extra: Record<string, unknown> = {}, sessionCtx: Record<string, unknown> = {}) {
       const { resolveDirectTools } = await vi.importActual<typeof import("../direct-tool-surface.ts")>("../direct-tool-surface.ts");
       mocks.resolveDirectTools.mockImplementation(resolveDirectTools);
       const entries = Object.entries(servers);
@@ -4518,8 +4539,8 @@ describe("directTools: \"search\" — registered inactive, activated by search o
         version: 1,
         servers: Object.fromEntries(entries.map(([name, [definition, tools]]) => [name, cacheEntry(definition, { tools })])),
       });
-      const config = { settings: { ...settings }, mcpServers: Object.fromEntries(entries.map(([name, [definition]]) => [name, definition])) };
-      return { config, ...(await bootPi099(undefined, config, pi099, setup)) };
+      const config = { settings: { ...settings }, mcpServers: Object.fromEntries(entries.map(([name, [definition]]) => [name, definition])), ...extra };
+      return { config, ...(await bootPi099(undefined, config, pi099, setup, sessionCtx)) };
     }
 
     const registrations = (api: any, name: string) => api.registerTool.mock.calls.map((call: any[]) => call[0]).filter((tool: { name: string }) => tool.name === name);
@@ -4991,6 +5012,223 @@ describe("directTools: \"search\" — registered inactive, activated by search o
 
       expect(reachesDocs).not.toHaveBeenCalled();
       expect(mocks.lazyConnect).not.toHaveBeenCalled();
+    });
+
+    describe("script tools", () => {
+      const closeStale = { description: "Close stale issues", file: "/no/such/close.js", inputSchema: { type: "object", properties: { repo: { type: "string" } }, required: ["repo"] } };
+      const triage = { description: "Triage", file: "/no/such/triage.js" };
+      // An eager server, so the session initializes and re-syncs.
+      const eager: Record<string, [Record<string, unknown>, unknown[]]> = { boot: [{ command: "b", lifecycle: "eager" }, []] };
+      const bootScripts = (scriptTools: Record<string, unknown>, servers = eager, settings: Record<string, unknown> = {}, setup?: (api: any) => void, pi099 = true) =>
+        bootCached(servers, settings, pi099, setup, { scriptTools });
+      const scriptRegistrations = (api: any) => api.registerTool.mock.calls.map((call: any[]) => call[0]).filter((tool: { label?: string }) => tool.label?.startsWith("Script: "));
+
+      it("registers each as a deferred mcp__script__<name> tool with no prompt line, once across unchanged syncs", async () => {
+        const { api, state, activeTools } = await bootScripts({ close_stale: closeStale, triage });
+        await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+        state.onToolMetadataUpdated("none", "tools-changed");
+
+        expect(scriptRegistrations(api).map((tool: { name: string }) => tool.name)).toEqual(["mcp__script__close_stale", "mcp__script__triage"]);
+        for (const tool of scriptRegistrations(api)) {
+          expect(tool).toMatchObject({ exposure: "deferred", namespace: { name: "mcp__script" } });
+          expect(tool).not.toHaveProperty("promptSnippet");
+          expect(tool).not.toHaveProperty("outputSchema");
+        }
+        expect(registeredTool(api, "mcp__script__close_stale")).toMatchObject({
+          label: "Script: close_stale", description: "Close stale issues", parameters: closeStale.inputSchema,
+        });
+        expect(registeredTool(api, "mcp__script__triage").parameters).toMatchObject({ type: "object", properties: {} });
+        expect(activeTools().filter((name) => name.startsWith("mcp__script"))).toEqual([]);
+        expect(state.scriptToolIssues).toEqual([]);
+      });
+
+      it("declares a script tool with declare: true", async () => {
+        const { api, activeTools } = await bootScripts({ close_stale: { ...closeStale, declare: true } });
+
+        expect(registeredTool(api, "mcp__script__close_stale")).not.toHaveProperty("exposure");
+        expect(registeredTool(api, "mcp__script__close_stale")).not.toHaveProperty("promptSnippet");
+        expect(activeTools()).toContain("mcp__script__close_stale");
+      });
+
+      it("keeps an MCP tool of a server named script reachable under a hashed name, for good", async () => {
+        const { api, state } = await bootScripts({ close_stale: closeStale }, { script: [{ command: "s", lifecycle: "eager" }, [{ name: "close_stale" }]] });
+        await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+        const mcpNames = () => api.registerTool.mock.calls.map((call: any[]) => call[0])
+          .filter((tool: { label?: string }) => tool.label === "MCP: close_stale").map((tool: { name: string }) => tool.name);
+
+        expect(registrations(api, "mcp__script__close_stale")).toMatchObject([{ label: "Script: close_stale" }]);
+        expect(mcpNames()).toEqual([expect.stringMatching(/^mcp__script__close_stale_[0-9a-f]{8}$/)]);
+
+        // Withdrawn from the config, the script tool's name still never goes to the MCP tool.
+        delete (state.config as Record<string, unknown>).scriptTools;
+        state.onToolMetadataUpdated("script", "tools-changed");
+        expect(registrations(api, "mcp__script__close_stale").at(-1)).toMatchObject({ label: "Script: close_stale", exposure: "hidden" });
+        expect(new Set(mcpNames()).size).toBe(1);
+        expect(mcpNames()[0]).not.toBe("mcp__script__close_stale");
+      });
+
+      it("warns at session start about a script tool a sync left out, once however often it syncs", async () => {
+        const notify = vi.fn();
+        const local = { command: "l", directTools: true, toolPrefix: "none", lifecycle: "eager" };
+        const { state } = await bootCached({ local: [local, [{ name: "mcp__script__close_stale" }]] }, {}, true, undefined, { scriptTools: { close_stale: closeStale } }, { hasUI: true, ui: { notify } });
+        await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+        state.onToolMetadataUpdated("local", "tools-changed");
+        state.onToolMetadataUpdated("local", "tools-changed");
+
+        const line = 'Script tool "close_stale" was not loaded — mcp__script__close_stale is already the name of a direct MCP tool.';
+        expect(state.scriptToolIssues).toEqual([line]);
+        expect(notify.mock.calls.filter(([text]) => text === line)).toEqual([[line, "warning"]]);
+      });
+
+      it("leaves a direct tool that takes a script tool's name registered", async () => {
+        const local = { command: "l", directTools: true, toolPrefix: "none", lifecycle: "eager" };
+        const unregisterTool = vi.fn(() => true);
+        const { api, state } = await bootScripts({ close_stale: closeStale }, { local: [local, []] }, {}, (pi) => { pi.unregisterTool = unregisterTool; });
+        await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+        expect(registrations(api, "mcp__script__close_stale")).toMatchObject([{ label: "Script: close_stale" }]);
+
+        // The server now has a direct tool under the script tool's name: the direct tool takes it.
+        mocks.loadMetadataCache.mockReturnValue({ version: 1, servers: { local: cacheEntry(local, { tools: [{ name: "mcp__script__close_stale" }] }) } });
+        state.onToolMetadataUpdated("local", "tools-changed");
+
+        expect(registrations(api, "mcp__script__close_stale").at(-1)).toMatchObject({ label: "MCP: mcp__script__close_stale" });
+        expect(registrations(api, "mcp__script__close_stale").at(-1)).not.toHaveProperty("exposure");
+        expect(unregisterTool).not.toHaveBeenCalledWith("mcp__script__close_stale");
+        expect(state.scriptToolIssues).toEqual(['Script tool "close_stale" was not loaded — mcp__script__close_stale is already the name of a direct MCP tool.']);
+      });
+
+      it("drops a script tool whose name a direct tool, a namespace tool or another extension has, with the reason", async () => {
+        const { api, state } = await bootScripts(
+          { close_stale: closeStale, other: triage, triage, kept: triage },
+          {
+            ...eager,
+            local: [{ command: "l", directTools: true, toolPrefix: "none" }, [{ name: "mcp__script__close_stale" }]],
+            script__other: [{ command: "o" }, [{ name: "run" }]],
+          },
+          {},
+          (pi) => pi.getAllTools.mockImplementation(() => [{ name: "mcp__script__triage" }]),
+        );
+        await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+
+        expect(scriptRegistrations(api).map((tool: { name: string }) => tool.name)).toEqual(["mcp__script__kept"]);
+        expect(state.scriptToolIssues).toEqual([
+          'Script tool "close_stale" was not loaded — mcp__script__close_stale is already the name of a direct MCP tool.',
+          'Script tool "other" was not loaded — mcp__script__other is already the name of an MCP server\'s namespace tool.',
+          'Script tool "triage" was not loaded — mcp__script__triage is already registered by another extension.',
+        ]);
+      });
+
+      it("refuses a call from another tool, such as codemode, and runs the model's own call", async () => {
+        const { api, handlers } = await bootScripts({ close_stale: closeStale });
+        const tool = registeredTool(api, "mcp__script__close_stale");
+        const toolCall = handlers.get("tool_call")!;
+        await toolCall({ toolName: "codemode", toolCallId: "cm-1", input: {} }, { signal: undefined });
+        await toolCall({ toolName: "mcp__script__close_stale", toolCallId: "cm-1/1", parentToolCallId: "cm-1", input: { repo: "a/b" } }, { signal: undefined });
+        await toolCall({ toolName: "mcp__script__close_stale", toolCallId: "model-1", input: { repo: "a/b" } }, { signal: undefined });
+
+        await expect(tool.execute("cm-1/1", { repo: "a/b" }, undefined, undefined, {})).resolves.toEqual({
+          content: [{ type: "text", text: 'Script tool "close_stale" cannot run inside another script. Pi does not let a codemode script start another script, so call this tool directly.' }],
+          details: { mode: "script_tool", tool: "close_stale", error: "nested_script_tool" },
+        });
+        // The model's call gets as far as reading the file.
+        await expect(tool.execute("model-1", { repo: "a/b" }, undefined, undefined, {})).resolves.toMatchObject({
+          details: { mode: "script_tool", tool: "close_stale", error: "script_file_missing" },
+        });
+      });
+
+      it("registers no script tool with MCP_DIRECT_TOOLS=__none__", async () => {
+        vi.stubEnv("MCP_DIRECT_TOOLS", "__none__");
+        try {
+          const { api } = await bootScripts({ close_stale: closeStale });
+          expect(scriptRegistrations(api)).toEqual([]);
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      });
+
+      it("freezes script tools with settings.freezeDirectTools", async () => {
+        const { api, state } = await bootScripts({ close_stale: closeStale }, eager, { freezeDirectTools: true });
+        await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+        (state.config.scriptTools as Record<string, unknown>).triage = triage;
+
+        state.onToolMetadataUpdated("none", "tools-changed");
+
+        expect(scriptRegistrations(api).map((tool: { name: string }) => tool.name)).toEqual(["mcp__script__close_stale"]);
+      });
+
+      it.each([false, true])("starts the session's trust check instead of deferring it when a project file defines a script tool (%s)", async (project) => {
+        const markProject = () => {
+          const config = mocks.loadMcpConfig();
+          Object.defineProperty(config, Symbol.for("pi-mcp-adapter/config-source-metadata"), {
+            value: { projectServers: new Map(), projectScriptTools: new Map([["close_stale", { path: "/project/.pi/mcp-adapter.json" }]]) },
+          });
+        };
+        await bootScripts({ close_stale: closeStale }, { lazy: [{ command: "l" }, [{ name: "find" }]] }, {}, project ? markProject : undefined);
+
+        expect(mocks.initializeMcp).toHaveBeenCalledTimes(project ? 1 : 0);
+      });
+
+      it("lists a project script tool that trust blocked in /mcp-adapter, apart from the migration notices", async () => {
+        const { api, state } = await bootScripts({ kept: triage });
+        await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+        state.blockedScriptTools = new Map([["close_stale", { reason: "approval-required", source: { path: "/project/.pi/mcp-adapter.json" } }]]);
+
+        state.onToolMetadataUpdated("boot", "tools-changed");
+
+        expect(state.scriptToolIssues).toEqual([
+          '/project/.pi/mcp-adapter.json: script tool "close_stale" was not loaded — it needs your approval; approve it in a trusted interactive session or set user-global settings.projectServers to "allow".',
+        ]);
+        expect(state.migrationNotices).toEqual([]);
+        expect(scriptRegistrations(api).map((tool: { name: string }) => tool.name)).toEqual(["mcp__script__kept"]);
+      });
+
+      it.each([false, true])("hands mcp({ tool }) for a script tool to the registered tool, or with a frozen surface runs it in the proxy (frozen: %s)", async (frozen) => {
+        const { api, state } = await bootScripts({ close_stale: closeStale }, eager, frozen ? { freezeDirectTools: true } : {});
+        await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+        const ran = { content: [{ type: "text", text: "ran" }], details: { mode: "script_tool", tool: "close_stale", calls: [] } };
+        const executeTool = vi.fn(async () => ({ isError: false, result: ran }));
+        const ctx = { executeTool, tools: [{ name: "mcp__script__close_stale" }] };
+
+        const result = await registeredTool(api, "mcp").execute("mcp-1", { tool: "close_stale", args: { repo: "a/b" } }, undefined, undefined, ctx);
+
+        if (frozen) {
+          expect(executeTool).not.toHaveBeenCalled();
+          expect(result.details).toEqual({ mode: "script_tool", tool: "close_stale", error: "script_file_missing" });
+        } else {
+          expect(executeTool).toHaveBeenCalledWith("mcp__script__close_stale", { repo: "a/b" });
+          expect(result).toEqual(ran);
+        }
+        expect(mocks.executeCall).not.toHaveBeenCalled();
+      });
+
+      it("runs mcp({ tool }) for a script tool in the proxy under MCP_DIRECT_TOOLS=__none__, refusing a nested-shaped call id", async () => {
+        vi.stubEnv("MCP_DIRECT_TOOLS", "__none__");
+        try {
+          const { prepareDirectToolArguments } = await vi.importActual<typeof import("../direct-tool-surface.ts")>("../direct-tool-surface.ts");
+          mocks.prepareDirectToolArguments.mockImplementation(prepareDirectToolArguments);
+          const { api, state } = await bootScripts({ close_stale: closeStale });
+          await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+          const call = (id: string, args: Record<string, unknown>) =>
+            registeredTool(api, "mcp").execute(id, { tool: "close_stale", args }, undefined, undefined, {});
+
+          expect((await call("cm-1/1", { repo: "a/b" })).details).toEqual({ mode: "script_tool", tool: "close_stale", error: "nested_script_tool" });
+          // A model call gets as far as reading the file, in the proxy: nothing is registered to hand it to.
+          expect((await call("model-1", { repo: "a/b" })).details).toEqual({ mode: "script_tool", tool: "close_stale", error: "script_file_missing" });
+          expect((await call("model-2", {})).details).toMatchObject({ mode: "script_tool", tool: "close_stale", error: "call_failed" });
+          expect(scriptRegistrations(api)).toEqual([]);
+          expect(mocks.executeCall).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      });
+
+      it("registers none before Pi 0.99, and says why", async () => {
+        const { api, state } = await bootScripts({ close_stale: closeStale }, eager, {}, undefined, false);
+        await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+
+        expect(scriptRegistrations(api)).toEqual([]);
+        expect(state.scriptToolIssues).toEqual(["Script tools need Pi 0.99.0 or later, so none were loaded."]);
+      });
     });
   });
 });

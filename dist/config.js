@@ -10,6 +10,7 @@ import { cloneBuiltInAgentPluginEntry, isBuiltInAgentPlugin, mergeBuiltInAgentPl
 import { loadClaudePluginBundles } from "./claude-plugin-loader.js";
 import { loadPackageMcpConfigs } from "./package-mcp-loader.js";
 import { REMOVED_JEV_KEYS, validateJevSettings } from "./jev-client.js";
+import { parseScriptTools } from "./script-tools.js";
 import { formatServerNamespace, isServerDisabled } from "./types.js";
 import { getMissingEnvVars, parseJsonWithComments, providerAuthUrlError, stripUtf8Bom, toStringRecord } from "./utils.js";
 const GENERIC_GLOBAL_CONFIG_PATH = join(homedir(), ".config", "mcp", "mcp.json");
@@ -432,7 +433,7 @@ export const MCP_CONFIG_SOURCE_METADATA = Symbol.for("pi-mcp-adapter/config-sour
 export function loadMcpConfig(overridePath, cwd = process.cwd()) {
     const loaded = loadMcpConfigWithSources(overridePath, cwd);
     Object.defineProperty(loaded.config, MCP_CONFIG_SOURCE_METADATA, {
-        value: { projectServers: loaded.projectServers, projectServerPolicy: loaded.projectServerPolicy },
+        value: { projectServers: loaded.projectServers, projectScriptTools: loaded.projectScriptTools, scriptToolIssues: loaded.scriptToolIssues, projectServerPolicy: loaded.projectServerPolicy },
         enumerable: false,
     });
     return loaded.config;
@@ -441,6 +442,8 @@ export function loadMcpConfigWithSources(overridePath, cwd = process.cwd()) {
     const sourceSpecs = getConfigSources(overridePath, cwd);
     const hostConfigDiscovery = getConfiguredHostConfigDiscovery(overridePath, cwd);
     const projectServers = new Map();
+    const projectScriptTools = new Map();
+    const scriptToolIssues = [];
     let projectServerPolicy = "ask";
     let projectAgentPluginSource;
     let projectClaudePluginSource;
@@ -461,6 +464,8 @@ export function loadMcpConfigWithSources(overridePath, cwd = process.cwd()) {
         const loaded = readSourceConfig(source.id, source.readPath);
         if (!loaded)
             continue;
+        // Read here, because expandImports and mergeConfigs keep only the config's own keys.
+        scriptToolIssues.push(...loaded.scriptToolIssues ?? []);
         // Pi replaces a global entry that the project file redefines; mergeServerMaps would merge fields.
         if (source.id === "pi-mcp-global") {
             for (const name of piProjectNames)
@@ -492,10 +497,17 @@ export function loadMcpConfigWithSources(overridePath, cwd = process.cwd()) {
             if (importedSource.scope === "project")
                 projectServers.set(name, { path: importedSource.path });
         }
+        // A later file's entry replaces the whole entry, so the file that set it last decides its scope.
+        for (const name of Object.keys(expanded.scriptTools ?? {})) {
+            if (source.scope === "project")
+                projectScriptTools.set(name, sourceRef);
+            else
+                projectScriptTools.delete(name);
+        }
         config = mergeConfigs(config, expanded);
     }
     if (isExclusiveConfigMode()) {
-        return { config: stripProjectProviderAuth(resolveConfiguredClaudePluginMcp(config, cwd), projectServers), projectServers, projectServerPolicy };
+        return { config: stripProjectProviderAuth(resolveConfiguredClaudePluginMcp(config, cwd), projectServers), projectServers, projectScriptTools, scriptToolIssues, projectServerPolicy };
     }
     const packageConfig = loadPackageMcpConfigs(cwd);
     const pluginConfig = loadAgentPluginConfigs(config.settings?.agentPluginPaths, cwd);
@@ -519,6 +531,8 @@ export function loadMcpConfigWithSources(overridePath, cwd = process.cwd()) {
     return {
         config: stripProjectProviderAuth(mergedConfig, projectServers),
         projectServers,
+        projectScriptTools,
+        scriptToolIssues,
         projectServerPolicy,
     };
 }
@@ -855,11 +869,14 @@ function mergeConfigs(base, next) {
     const imports = mergeImports(base.imports, next.imports);
     const settings = next.settings ? { ...base.settings, ...next.settings } : base.settings;
     const claudePlugins = next.claudePlugins ?? base.claudePlugins;
+    // A later file's script tool replaces a same-named one whole, never field by field.
+    const scriptTools = next.scriptTools ? { ...base.scriptTools, ...next.scriptTools } : base.scriptTools;
     return {
         mcpServers: mergeServerMaps(base.mcpServers, next.mcpServers),
         ...(imports !== undefined ? { imports } : {}),
         ...(settings !== undefined ? { settings } : {}),
         ...(claudePlugins !== undefined ? { claudePlugins } : {}),
+        ...(scriptTools !== undefined ? { scriptTools } : {}),
     };
 }
 // Credential-bearing fields whose value is bound to a specific server `url`.
@@ -975,6 +992,7 @@ function expandImports(config, cwd = process.cwd()) {
             imports: config.imports,
             ...(config.settings !== undefined ? { settings: config.settings } : {}),
             ...(config.claudePlugins !== undefined ? { claudePlugins: config.claudePlugins } : {}),
+            ...(config.scriptTools !== undefined ? { scriptTools: config.scriptTools } : {}),
             mcpServers: mergeServerMaps(importedServers, config.mcpServers),
         },
         serverSources,
@@ -1116,7 +1134,7 @@ function readValidatedConfig(path, label) {
         const text = readFileSync(path, "utf-8");
         if (stripJsonComments(text, { trailingCommas: true }).trim() === "")
             return null;
-        return validateConfig(parseJsonWithComments(text));
+        return validateConfig(parseJsonWithComments(text), path);
     }
     catch (error) {
         console.warn(`Failed to load ${label}:`, error);
@@ -1151,7 +1169,7 @@ function readPiMcpConfig(path) {
     }
     const file = {
         mcpServers: {},
-        adapterKeys: ["settings", "imports", "claudePlugins", "mcp-servers"].filter((key) => raw[key] !== undefined),
+        adapterKeys: ["settings", "imports", "claudePlugins", "scriptTools", "mcp-servers"].filter((key) => raw[key] !== undefined),
         skipped: [],
         ignoredSettings: new Map(),
     };
@@ -1293,15 +1311,25 @@ function translatePiOAuth(oauth) {
     }
     return { oauth: result, ignored: Object.keys(unknown).map((key) => `oauth.${key}`) };
 }
-function validateConfig(raw) {
+/**
+ * `sourcePath` is the config file's own path. Only a file read from a path has script tools,
+ * because their relative `file` paths resolve against it; Claude plugin configs have none.
+ */
+function validateConfig(raw, sourcePath) {
     if (!isRecord(raw)) {
         return { mcpServers: {} };
     }
+    const parsedScriptTools = sourcePath !== undefined && raw.scriptTools !== undefined
+        ? parseScriptTools(raw.scriptTools, sourcePath)
+        : undefined;
+    const hasScriptTools = parsedScriptTools !== undefined && Object.keys(parsedScriptTools.scriptTools).length > 0;
     return {
         mcpServers: toServerEntries(raw.mcpServers ?? raw["mcp-servers"]),
         ...(Array.isArray(raw.imports) ? { imports: raw.imports } : {}),
         ...(raw.settings !== undefined ? { settings: parseSettings(raw.settings) } : {}),
         ...(raw.claudePlugins !== undefined ? { claudePlugins: parseClaudePlugins(raw.claudePlugins) } : {}),
+        ...(hasScriptTools ? { scriptTools: parsedScriptTools.scriptTools } : {}),
+        ...(parsedScriptTools?.issues.length ? { scriptToolIssues: parsedScriptTools.issues } : {}),
     };
 }
 function parseSettings(value) {

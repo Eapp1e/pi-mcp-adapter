@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { McpExtensionState } from "./state.ts";
 import { formatToolName, isServerDisabled, resolveToolPrefix, type McpAdapterOptions, type PromptMetadata, type ServerEntry, type ToolMetadata, type ToolSelectorCandidateIndex } from "./types.ts";
 import { cloneMcpConfig, loadMcpConfig, resolveConfiguredClaudePluginMcp } from "./config.ts";
-import { applyProjectServerTrustToConfig, describeProjectServerBlock, excludeProjectServersAtLoadTime } from "./project-server-trust.ts";
+import { applyProjectServerTrustToConfig, describeBlockedScriptTool, describeProjectServerBlock, excludeProjectServersAtLoadTime, loadedScriptToolIssues, type ProjectTrustResult } from "./project-server-trust.ts";
 import { ConsentManager } from "./consent-manager.ts";
 import { McpLifecycleManager } from "./lifecycle.ts";
 import {
@@ -147,11 +147,12 @@ export async function initializeMcp(
   }
   const ui = rawUi ? createOwnedUi(rawUi, owner) : undefined;
   const runtimeSignal = combineAbortSignals(owner.signal, initialSignal);
-  const trustResult = options.config !== undefined
-    ? { config: resolveConfiguredClaudePluginMcp(cloneMcpConfig(options.config), cwd), blockedServers: new Map() }
+  const loadedConfig = options.config === undefined ? loadMcpConfig(configPath, cwd) : undefined;
+  const trustResult: ProjectTrustResult = loadedConfig === undefined
+    ? { config: resolveConfiguredClaudePluginMcp(cloneMcpConfig(options.config!), cwd), blockedServers: new Map() }
     : options.excludeProjectServers
-      ? { config: excludeProjectServersAtLoadTime(loadMcpConfig(configPath, cwd)), blockedServers: new Map() }
-      : await applyProjectServerTrustToConfig(loadMcpConfig(configPath, cwd), ctx, { allowUnapproved: projectServersFlag === "allow" });
+      ? { config: excludeProjectServersAtLoadTime(loadedConfig), blockedServers: new Map() }
+      : await applyProjectServerTrustToConfig(loadedConfig, ctx, { allowUnapproved: projectServersFlag === "allow" });
   options.onProjectTrustResolved?.();
   const config = trustResult.config;
   const authStorageOptions = getAuthStorageOptions(config.settings?.oauthDir, cwd, config.settings?.oauthCredentialStore);
@@ -228,6 +229,8 @@ export async function initializeMcp(
     failureMessages,
     approvedToolCalls,
     blockedProjectServers: trustResult.blockedServers,
+    blockedScriptTools: trustResult.blockedScriptTools ?? new Map(),
+    ...(loadedConfig !== undefined ? { scriptToolLoadIssues: loadedScriptToolIssues(loadedConfig) } : {}),
     approvedServers: new Map(),
     ...(persistSessionApproval !== undefined ? { persistSessionApproval } : {}),
     ...(sessionManager !== undefined ? { sessionManager } : {}),
@@ -293,6 +296,11 @@ export async function initializeMcp(
     const summary = [...trustResult.blockedServers].map(([name, entry]) => `${name} (${describeProjectServerBlock(entry.reason)})`).join(", ");
     if (hasUI) ui?.notify(`MCP: Project servers blocked: ${summary}`, "warning");
     else console.warn(`MCP: Project servers blocked: ${summary}`);
+  }
+  for (const [name, block] of trustResult.blockedScriptTools ?? []) {
+    const line = describeBlockedScriptTool(name, block);
+    if (hasUI) ui?.notify(line, "warning");
+    else console.warn(`MCP: ${line}`);
   }
 
   const idleSetting = typeof config.settings?.idleTimeout === "number" ? config.settings.idleTimeout : 10;

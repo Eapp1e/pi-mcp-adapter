@@ -113,6 +113,13 @@ export interface ProjectServerSource {
 export interface LoadedMcpConfig {
     config: McpConfig;
     projectServers: Map<string, ProjectServerSource>;
+    /** Script tools whose entry came from a project config file, by name. Always set by loadMcpConfigWithSources. */
+    projectScriptTools?: Map<string, ProjectServerSource>;
+    /**
+     * One line per script tool a config file defines but the adapter did not load, with the reason.
+     * Kept apart from the migration notices, which also reach `mcp({})`. Always set by loadMcpConfigWithSources.
+     */
+    scriptToolIssues?: string[];
     projectServerPolicy: "ask" | "allow";
 }
 export declare const MCP_CONFIG_SOURCE_METADATA: unique symbol;
