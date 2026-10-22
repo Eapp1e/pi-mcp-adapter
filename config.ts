@@ -11,7 +11,7 @@ import { loadClaudePluginBundles } from "./claude-plugin-loader.ts";
 import { loadPackageMcpConfigs } from "./package-mcp-loader.ts";
 import { REMOVED_JEV_KEYS, validateJevSettings } from "./jev-client.ts";
 import { parseScriptTools } from "./script-tools.ts";
-import { formatServerNamespace, isServerDisabled, type ClaudePluginConfig, type HostConfigDiscovery, type McpConfig, type OAuthConfig, type ServerEntry, type McpSettings, type ImportKind, type ServerProvenance } from "./types.ts";
+import { formatServerNamespace, isServerDisabled, type ClaudePluginConfig, type HostConfigDiscovery, type McpConfig, type OAuthConfig, type ServerEntry, type McpSettings, type ImportKind, type ScriptToolDefinition, type ServerProvenance } from "./types.ts";
 import { getMissingEnvVars, parseJsonWithComments, providerAuthUrlError, stripUtf8Bom, toStringRecord } from "./utils.ts";
 
 const GENERIC_GLOBAL_CONFIG_PATH = join(homedir(), ".config", "mcp", "mcp.json");
@@ -1042,7 +1042,7 @@ function getAncestorProjectDirs(cwd: string, root: string): string[] {
   return dirs;
 }
 
-function isExclusiveConfigMode(): boolean {
+export function isExclusiveConfigMode(): boolean {
   return process.env.PI_MCP_CONFIG_MODE?.trim().toLowerCase() === "exclusive";
 }
 
@@ -1782,11 +1782,20 @@ function serializeRawConfig(raw: Record<string, unknown>): string {
   return `${JSON.stringify(raw, null, 2)}\n`;
 }
 
-function buildUnifiedDiff(beforeText: string, afterText: string): string {
+/**
+ * A line diff of two texts. By default every line is listed; with `context`, only changed lines and
+ * that many lines around them, in `@@` hunks.
+ */
+export function buildUnifiedDiff(beforeText: string, afterText: string, options: { context?: number } = {}): string {
   if (beforeText === afterText) return "(no changes)";
 
-  const before = beforeText.split("\n");
-  const after = afterText.split("\n");
+  // With context, lines are counted as in `diff -u`: a final newline ends a line rather than starting
+  // a blank one, so an empty text has no lines.
+  const split = (text: string) => options.context !== undefined && (text === "" || text.endsWith("\n"))
+    ? text.split("\n").slice(0, -1)
+    : text.split("\n");
+  const before = split(beforeText);
+  const after = split(afterText);
   const rows = before.length;
   const cols = after.length;
   const lcs = Array.from({ length: rows + 1 }, () => Array<number>(cols + 1).fill(0));
@@ -1802,7 +1811,7 @@ function buildUnifiedDiff(beforeText: string, afterText: string): string {
     }
   }
 
-  const lines: string[] = ["--- before", "+++ after"];
+  const lines: string[] = [];
   let i = 0;
   let j = 0;
   while (i < rows || j < cols) {
@@ -1823,14 +1832,51 @@ function buildUnifiedDiff(beforeText: string, afterText: string): string {
     }
   }
 
-  return lines.join("\n");
+  const body = options.context === undefined ? lines : contextHunks(lines, options.context);
+  // The texts differ, so with no changed line only the final newline was added or removed.
+  if (body.length === 0) body.push("(only the final newline differs)");
+  return ["--- before", "+++ after", ...body].join("\n");
+}
+
+// Removals come before additions within each run of changes, as in `diff -u`.
+function contextHunks(lines: readonly string[], context: number): string[] {
+  const ordered: string[] = [];
+  for (let k = 0; k < lines.length;) {
+    if (lines[k]!.startsWith(" ")) {
+      ordered.push(lines[k++]!);
+      continue;
+    }
+    const run: string[] = [];
+    while (k < lines.length && !lines[k]!.startsWith(" ")) run.push(lines[k++]!);
+    // Loops, not push(...run): a spread past about 100,000 arguments throws RangeError.
+    for (const line of run) if (line.startsWith("-")) ordered.push(line);
+    for (const line of run) if (line.startsWith("+")) ordered.push(line);
+  }
+  const changed = ordered.flatMap((line, index) => line.startsWith(" ") ? [] : [index]);
+  const hunks: string[] = [];
+  // Line numbers of ordered[cursor] in the before and after texts.
+  let cursor = 0;
+  let beforeLine = 1;
+  let afterLine = 1;
+  for (let k = 0; k < changed.length; k++) {
+    const start = Math.max(0, changed[k]! - context);
+    while (k + 1 < changed.length && changed[k + 1]! - changed[k]! - 1 <= 2 * context) k++;
+    const end = Math.min(ordered.length, changed[k]! + context + 1);
+    for (; cursor < start; cursor++) {
+      if (!ordered[cursor]!.startsWith("+")) beforeLine++;
+      if (!ordered[cursor]!.startsWith("-")) afterLine++;
+    }
+    const hunk = ordered.slice(start, end);
+    const beforeCount = hunk.filter((line) => !line.startsWith("+")).length;
+    const afterCount = hunk.filter((line) => !line.startsWith("-")).length;
+    hunks.push(`@@ -${beforeCount === 0 ? beforeLine - 1 : beforeLine},${beforeCount} +${afterCount === 0 ? afterLine - 1 : afterLine},${afterCount} @@`);
+    for (const line of hunk) hunks.push(line);
+  }
+  return hunks;
 }
 
 function buildConfigWritePreview(filePath: string, nextRaw: Record<string, unknown>): ConfigWritePreview {
-  const existed = existsSync(filePath);
-  const beforeRaw = readRawConfigObject(filePath);
-  const beforeText = existed ? serializeRawConfig(beforeRaw) : "";
-  const afterText = serializeRawConfig(nextRaw);
+  const { existed, beforeText, afterText } = configWriteTexts(filePath, nextRaw);
   return {
     path: filePath,
     existed,
@@ -1839,6 +1885,14 @@ function buildConfigWritePreview(filePath: string, nextRaw: Record<string, unkno
     afterText,
     diffText: buildUnifiedDiff(beforeText, afterText),
   };
+}
+
+function configWriteTexts(filePath: string, nextRaw: Record<string, unknown>): Pick<ConfigWritePreview, "existed" | "beforeText" | "afterText"> {
+  const existed = existsSync(filePath);
+  const beforeRaw = readRawConfigObject(filePath);
+  const beforeText = existed ? serializeRawConfig(beforeRaw) : "";
+  const afterText = serializeRawConfig(nextRaw);
+  return { existed, beforeText, afterText };
 }
 
 function readRawConfigObject(filePath: string): Record<string, unknown> {
@@ -2142,6 +2196,36 @@ export function writeSharedServerEntry(filePath: string, serverName: string, ent
   const servers = getServersObject(raw, filePath);
   servers[serverName] = entry;
   setServersObject(raw, servers);
+  writeRawConfigObject(filePath, raw);
+  return filePath;
+}
+
+function getScriptToolsObject(raw: Record<string, unknown>, filePath: string): Record<string, ScriptToolDefinition> {
+  if (Object.hasOwn(raw, "scriptTools") && !isRecord(raw.scriptTools)) {
+    throw new Error(`Failed to update MCP config at ${filePath}: scriptTools must be an object`);
+  }
+  return (raw.scriptTools ?? {}) as Record<string, ScriptToolDefinition>;
+}
+
+/** The file's text before and after the entry is written, for a diff the caller bounds. */
+export function previewScriptToolEntryTexts(filePath: string, name: string, entry: ScriptToolDefinition): Pick<ConfigWritePreview, "existed" | "beforeText" | "afterText"> {
+  return configWriteTexts(filePath, withScriptToolEntry(filePath, name, entry));
+}
+
+/** The file's `scriptTools` entry for `name` as written, or undefined when it has none. */
+export function readScriptToolEntry(filePath: string, name: string): unknown {
+  const scriptTools = getScriptToolsObject(readRawConfigObject(filePath), filePath);
+  return Object.hasOwn(scriptTools, name) ? scriptTools[name] : undefined;
+}
+
+function withScriptToolEntry(filePath: string, name: string, entry: ScriptToolDefinition): Record<string, unknown> {
+  const raw = readRawConfigObject(filePath);
+  return { ...raw, scriptTools: { ...getScriptToolsObject(raw, filePath), [name]: entry } };
+}
+
+export function writeScriptToolEntry(filePath: string, name: string, entry: ScriptToolDefinition): string {
+  const raw = readRawConfigObject(filePath);
+  raw.scriptTools = { ...getScriptToolsObject(raw, filePath), [name]: entry };
   writeRawConfigObject(filePath, raw);
   return filePath;
 }

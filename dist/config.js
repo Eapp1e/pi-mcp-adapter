@@ -862,7 +862,7 @@ function getAncestorProjectDirs(cwd, root) {
     }
     return dirs;
 }
-function isExclusiveConfigMode() {
+export function isExclusiveConfigMode() {
     return process.env.PI_MCP_CONFIG_MODE?.trim().toLowerCase() === "exclusive";
 }
 function mergeConfigs(base, next) {
@@ -1590,11 +1590,20 @@ function extractServers(config, kind) {
 function serializeRawConfig(raw) {
     return `${JSON.stringify(raw, null, 2)}\n`;
 }
-function buildUnifiedDiff(beforeText, afterText) {
+/**
+ * A line diff of two texts. By default every line is listed; with `context`, only changed lines and
+ * that many lines around them, in `@@` hunks.
+ */
+export function buildUnifiedDiff(beforeText, afterText, options = {}) {
     if (beforeText === afterText)
         return "(no changes)";
-    const before = beforeText.split("\n");
-    const after = afterText.split("\n");
+    // With context, lines are counted as in `diff -u`: a final newline ends a line rather than starting
+    // a blank one, so an empty text has no lines.
+    const split = (text) => options.context !== undefined && (text === "" || text.endsWith("\n"))
+        ? text.split("\n").slice(0, -1)
+        : text.split("\n");
+    const before = split(beforeText);
+    const after = split(afterText);
     const rows = before.length;
     const cols = after.length;
     const lcs = Array.from({ length: rows + 1 }, () => Array(cols + 1).fill(0));
@@ -1609,7 +1618,7 @@ function buildUnifiedDiff(beforeText, afterText) {
                 : Math.max(nextRow[j] ?? 0, row[j + 1] ?? 0);
         }
     }
-    const lines = ["--- before", "+++ after"];
+    const lines = [];
     let i = 0;
     let j = 0;
     while (i < rows || j < cols) {
@@ -1629,13 +1638,59 @@ function buildUnifiedDiff(beforeText, afterText) {
             i++;
         }
     }
-    return lines.join("\n");
+    const body = options.context === undefined ? lines : contextHunks(lines, options.context);
+    // The texts differ, so with no changed line only the final newline was added or removed.
+    if (body.length === 0)
+        body.push("(only the final newline differs)");
+    return ["--- before", "+++ after", ...body].join("\n");
+}
+// Removals come before additions within each run of changes, as in `diff -u`.
+function contextHunks(lines, context) {
+    const ordered = [];
+    for (let k = 0; k < lines.length;) {
+        if (lines[k].startsWith(" ")) {
+            ordered.push(lines[k++]);
+            continue;
+        }
+        const run = [];
+        while (k < lines.length && !lines[k].startsWith(" "))
+            run.push(lines[k++]);
+        // Loops, not push(...run): a spread past about 100,000 arguments throws RangeError.
+        for (const line of run)
+            if (line.startsWith("-"))
+                ordered.push(line);
+        for (const line of run)
+            if (line.startsWith("+"))
+                ordered.push(line);
+    }
+    const changed = ordered.flatMap((line, index) => line.startsWith(" ") ? [] : [index]);
+    const hunks = [];
+    // Line numbers of ordered[cursor] in the before and after texts.
+    let cursor = 0;
+    let beforeLine = 1;
+    let afterLine = 1;
+    for (let k = 0; k < changed.length; k++) {
+        const start = Math.max(0, changed[k] - context);
+        while (k + 1 < changed.length && changed[k + 1] - changed[k] - 1 <= 2 * context)
+            k++;
+        const end = Math.min(ordered.length, changed[k] + context + 1);
+        for (; cursor < start; cursor++) {
+            if (!ordered[cursor].startsWith("+"))
+                beforeLine++;
+            if (!ordered[cursor].startsWith("-"))
+                afterLine++;
+        }
+        const hunk = ordered.slice(start, end);
+        const beforeCount = hunk.filter((line) => !line.startsWith("+")).length;
+        const afterCount = hunk.filter((line) => !line.startsWith("-")).length;
+        hunks.push(`@@ -${beforeCount === 0 ? beforeLine - 1 : beforeLine},${beforeCount} +${afterCount === 0 ? afterLine - 1 : afterLine},${afterCount} @@`);
+        for (const line of hunk)
+            hunks.push(line);
+    }
+    return hunks;
 }
 function buildConfigWritePreview(filePath, nextRaw) {
-    const existed = existsSync(filePath);
-    const beforeRaw = readRawConfigObject(filePath);
-    const beforeText = existed ? serializeRawConfig(beforeRaw) : "";
-    const afterText = serializeRawConfig(nextRaw);
+    const { existed, beforeText, afterText } = configWriteTexts(filePath, nextRaw);
     return {
         path: filePath,
         existed,
@@ -1644,6 +1699,13 @@ function buildConfigWritePreview(filePath, nextRaw) {
         afterText,
         diffText: buildUnifiedDiff(beforeText, afterText),
     };
+}
+function configWriteTexts(filePath, nextRaw) {
+    const existed = existsSync(filePath);
+    const beforeRaw = readRawConfigObject(filePath);
+    const beforeText = existed ? serializeRawConfig(beforeRaw) : "";
+    const afterText = serializeRawConfig(nextRaw);
+    return { existed, beforeText, afterText };
 }
 function readRawConfigObject(filePath) {
     if (!lstatSync(filePath, { throwIfNoEntry: false }))
@@ -1919,6 +1981,31 @@ export function writeSharedServerEntry(filePath, serverName, entry) {
     const servers = getServersObject(raw, filePath);
     servers[serverName] = entry;
     setServersObject(raw, servers);
+    writeRawConfigObject(filePath, raw);
+    return filePath;
+}
+function getScriptToolsObject(raw, filePath) {
+    if (Object.hasOwn(raw, "scriptTools") && !isRecord(raw.scriptTools)) {
+        throw new Error(`Failed to update MCP config at ${filePath}: scriptTools must be an object`);
+    }
+    return (raw.scriptTools ?? {});
+}
+/** The file's text before and after the entry is written, for a diff the caller bounds. */
+export function previewScriptToolEntryTexts(filePath, name, entry) {
+    return configWriteTexts(filePath, withScriptToolEntry(filePath, name, entry));
+}
+/** The file's `scriptTools` entry for `name` as written, or undefined when it has none. */
+export function readScriptToolEntry(filePath, name) {
+    const scriptTools = getScriptToolsObject(readRawConfigObject(filePath), filePath);
+    return Object.hasOwn(scriptTools, name) ? scriptTools[name] : undefined;
+}
+function withScriptToolEntry(filePath, name, entry) {
+    const raw = readRawConfigObject(filePath);
+    return { ...raw, scriptTools: { ...getScriptToolsObject(raw, filePath), [name]: entry } };
+}
+export function writeScriptToolEntry(filePath, name, entry) {
+    const raw = readRawConfigObject(filePath);
+    raw.scriptTools = { ...getScriptToolsObject(raw, filePath), [name]: entry };
     writeRawConfigObject(filePath, raw);
     return filePath;
 }
