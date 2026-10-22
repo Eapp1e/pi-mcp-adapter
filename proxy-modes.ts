@@ -29,6 +29,16 @@ import { createJsonSchemaValidator } from "./json-schema-validator.ts";
 import { describeProjectServerBlock, disabledServerReason } from "./project-server-trust.ts";
 
 type ProxyToolResult = AgentToolResult<Record<string, unknown>>;
+/**
+ * Runs a resolved, connected and validated proxy call as a nested Pi call of the tool registered
+ * for it, so Pi's hooks see the real tool. Resolves to undefined to keep the call in the proxy.
+ */
+export type NestedCallHandOff = (call: {
+  serverName: string;
+  toolMeta: ToolMetadata;
+  args: Record<string, unknown> | undefined;
+  callIdentity: Record<string, string>;
+}) => Promise<ProxyToolResult | undefined>;
 type ClientCallToolResult = Awaited<ReturnType<Client["callTool"]>>;
 type ClientReadResourceResult = Awaited<ReturnType<Client["readResource"]>>;
 
@@ -36,7 +46,7 @@ const require = createRequire(import.meta.url);
 const proxyArgumentValidators = new WeakMap<object, JsonSchemaValidator<unknown>>();
 const MAX_REGEX_SEARCH_QUERY_LENGTH = 256;
 
-function proxyArgumentValidationError(inputSchema: unknown, args: unknown): string | null {
+function proxyArgumentValidationError(inputSchema: unknown, args: unknown): string | null | undefined {
   if (!inputSchema || typeof inputSchema !== "object" || Array.isArray(inputSchema)) return null;
   try {
     let validate = proxyArgumentValidators.get(inputSchema);
@@ -47,8 +57,8 @@ function proxyArgumentValidationError(inputSchema: unknown, args: unknown): stri
     const result = validate(args);
     return result.valid ? null : result.errorMessage ?? "arguments do not match the advertised input schema";
   } catch {
-    // Preserve server-side validation for schema dialects the adapter cannot evaluate.
-    return null;
+    // Undefined: the adapter cannot evaluate this schema's dialect, so the server validates it.
+    return undefined;
   }
 }
 const INSTRUCTIONS_PREVIEW_LENGTH = 300;
@@ -1238,6 +1248,7 @@ export async function executeCall(
   // Internal consumers own successful data delivery; origin remains approval metadata only.
   internalDelivery?: { onSuccess: (data: unknown) => void },
   toolCallId?: string,
+  handOff?: NestedCallHandOff,
 ): Promise<ProxyToolResult> {
   const ownedSignal = combineAbortSignals(state.owner?.signal, signal);
   throwIfAborted(ownedSignal);
@@ -1576,6 +1587,21 @@ export async function executeCall(
       content: guarded.content,
       details: { mode: "call", error: "call_failed", ...callIdentity, message: validationError, ...guardedMcpDetails(guarded) },
     };
+  }
+
+  // After connect and validation, which the nested leg repeats cheaply; before approval, which only it runs.
+  // Pi validates handed-off arguments itself, so a schema only the server can evaluate stays in the proxy.
+  const serverValidatesArguments = validationError === undefined;
+  if (handOff && !serverValidatesArguments) {
+    // Held in flight while Pi's tool_call hooks, such as a permission dialog, run before the nested leg.
+    state.manager.incrementInFlight(serverName);
+    let handedOff: ProxyToolResult | undefined;
+    try {
+      handedOff = await handOff({ serverName, toolMeta, args: normalizedArgs, callIdentity });
+    } finally {
+      state.manager.decrementInFlight(serverName);
+    }
+    if (handedOff) return handedOff;
   }
 
   let uiSession: UiSessionRuntime | null = null;

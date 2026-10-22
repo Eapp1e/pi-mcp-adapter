@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   initializeMcp: vi.fn(),
   holdProjectTrust: false,
   clearFailure: vi.fn(),
+  lazyConnect: vi.fn(),
   updateStatusBar: vi.fn(),
   flushMetadataCache: vi.fn(),
   updateMetadataCache: vi.fn(),
@@ -86,6 +87,7 @@ vi.mock("../init.ts", async () => {
   return {
     initializeMcp: initializeMcpResolvingTrust,
     clearFailure: mocks.clearFailure,
+    lazyConnect: mocks.lazyConnect,
     updateStatusBar: mocks.updateStatusBar,
     flushMetadataCache: mocks.flushMetadataCache,
     updateMetadataCache: mocks.updateMetadataCache,
@@ -2442,6 +2444,7 @@ describe("mcpAdapter session lifecycle", () => {
       undefined,
       undefined,
       "call-1",
+      undefined,
     );
   });
 
@@ -2555,6 +2558,7 @@ describe("mcpAdapter session lifecycle", () => {
       undefined,
       undefined,
       "call-1",
+      undefined,
     );
   });
 
@@ -2958,6 +2962,7 @@ describe("mcpAdapter session lifecycle", () => {
         return {
           initializeMcp: initializeMcpResolvingTrust,
           clearFailure: mocks.clearFailure,
+          lazyConnect: mocks.lazyConnect,
           updateStatusBar: mocks.updateStatusBar,
           flushMetadataCache: mocks.flushMetadataCache,
           updateMetadataCache: mocks.updateMetadataCache,
@@ -4427,7 +4432,7 @@ describe("directTools: \"search\" — registered inactive, activated by search o
       return () => [...active];
     }
 
-    async function bootPi099(specs?: unknown[], config: Record<string, any> = searchConfig) {
+    async function bootPi099(specs?: unknown[], config: Record<string, any> = searchConfig, pi099 = true, setup?: (api: any) => void) {
       if (specs) mocks.resolveDirectTools.mockReturnValue(specs);
       const state = createState();
       state.config = config;
@@ -4435,14 +4440,17 @@ describe("directTools: \"search\" — registered inactive, activated by search o
       mocks.initializeMcp.mockResolvedValue(state);
       const { default: mcpAdapter } = await import("../index.ts");
       const { api, handlers } = createPi({ unregisterTool: false });
-      api.registerMcpServer = vi.fn();
-      api.getMcpServers = vi.fn(() => []);
+      if (pi099) {
+        api.registerMcpServer = vi.fn();
+        api.getMcpServers = vi.fn(() => []);
+      }
       const activeTools = trackPiToolExposure(api);
+      setup?.(api);
       mcpAdapter(api);
       await handlers.get("session_start")?.({}, {});
       await Promise.resolve();
       await Promise.resolve();
-      return { api, handlers, activeTools, proxyTool: registeredTool(api, "mcp") };
+      return { api, handlers, state, activeTools, proxyTool: registeredTool(api, "mcp") };
     }
 
     it("registers search-mode tools inactive and deferred, with their server's namespace, annotations and a CallToolResult output schema", async () => {
@@ -4558,6 +4566,496 @@ describe("directTools: \"search\" — registered inactive, activated by search o
       expect(ok.structuredContent).not.toHaveProperty("isError");
       expect(failed.structuredContent).toEqual({ content: text("Error: boom"), isError: true });
       expect(mocks.createDirectToolExecutor).toHaveBeenCalledWith(expect.any(Function), expect.any(Function), expect.objectContaining({ prefixedName: "demo_alpha" }), true);
+    });
+
+    const echoTool = {
+      name: "echo",
+      outputSchema: { type: "object", properties: { value: { type: "string" } } },
+      annotations: { title: "Echo", destructiveHint: true },
+    };
+
+    async function bootCached(servers: Record<string, [Record<string, unknown>, unknown[]]>, settings: Record<string, unknown> = {}, pi099 = true, setup?: (api: any) => void) {
+      const { resolveDirectTools } = await vi.importActual<typeof import("../direct-tool-surface.ts")>("../direct-tool-surface.ts");
+      mocks.resolveDirectTools.mockImplementation(resolveDirectTools);
+      const entries = Object.entries(servers);
+      mocks.loadMetadataCache.mockReturnValue({
+        version: 1,
+        servers: Object.fromEntries(entries.map(([name, [definition, tools]]) => [name, cacheEntry(definition, { tools })])),
+      });
+      const config = { settings: { scriptMode: false, ...settings }, mcpServers: Object.fromEntries(entries.map(([name, [definition]]) => [name, definition])) };
+      return { config, ...(await bootPi099(undefined, config, pi099, setup)) };
+    }
+
+    const registrations = (api: any, name: string) => api.registerTool.mock.calls.map((call: any[]) => call[0]).filter((tool: { name: string }) => tool.name === name);
+
+    it("registers every cached tool without a direct registration as a deferred mcp__<server>__<tool> tool, and declares none", async () => {
+      const { api, activeTools } = await bootCached({
+        direct: [{ command: "d", directTools: true }, [{ name: "find" }]],
+        picked: [{ command: "p", directTools: ["a"] }, [{ name: "a" }, { name: "b" }]],
+        proxy: [{ command: "x", excludeTools: ["secret"] }, [echoTool, { name: "secret" }, { name: "widget", uiVisibility: ["app"] }]],
+        off: [{ command: "o", disabled: true }, [{ name: "echo" }]],
+      });
+
+      expect(registeredTool(api, "mcp__proxy__echo")).toMatchObject({
+        exposure: "deferred",
+        namespace: { name: "mcp__proxy" },
+        annotations: { destructiveHint: true },
+        outputSchema: { properties: { structuredContent: echoTool.outputSchema }, required: ["content"] },
+      });
+      expect(registeredTool(api, "mcp__proxy__echo").annotations).not.toHaveProperty("title");
+      // Like Pi's built-in MCP tools: no prompt line, even once tool_search activates one.
+      expect(registeredTool(api, "mcp__proxy__echo")).not.toHaveProperty("promptSnippet");
+      expect(registeredTool(api, "direct_find")).toHaveProperty("promptSnippet");
+      expect(registeredTool(api, "mcp__picked__b")).toMatchObject({ exposure: "deferred" });
+      for (const name of ["mcp__proxy__secret", "mcp__proxy__widget", "mcp__off__echo", "mcp__direct__find", "mcp__picked__a"]) {
+        expect(registrations(api, name)).toEqual([]);
+      }
+      expect(registrations(api, "direct_find")).toHaveLength(1);
+      expect(registeredTool(api, "direct_find")).not.toHaveProperty("exposure");
+      expect(activeTools()).toEqual(["bash", "mcp", "direct_find", "picked_a", "mcp__proxy"]);
+      expect(api.setActiveTools.mock.calls.flatMap(([next]: [string[]]) => next).filter((name: string) => /^mcp__\w+__\w+$/.test(name))).toEqual([]);
+    });
+
+    it("never takes a tool name another extension registered, and keeps its own names across syncs", async () => {
+      // Pi's built-in MCP registered the same server's tool under the shared naming scheme.
+      const piTools = [{ name: "mcp__proxy__echo" }];
+      const { api, config, state } = await bootCached(
+        { proxy: [{ command: "x", lifecycle: "eager" }, [echoTool, { name: "run" }]] }, {}, true,
+        (pi) => pi.getAllTools.mockImplementation(() => piTools),
+      );
+      await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+      const deferredNames = () => [...new Set(api.registerTool.mock.calls.map((call: any[]) => call[0])
+        .filter((tool: { exposure?: string }) => tool.exposure === "deferred").map((tool: { name: string }) => tool.name))];
+
+      expect(registrations(api, "mcp__proxy__echo")).toEqual([]);
+      const first = deferredNames();
+      expect(first).toEqual([expect.stringMatching(/^mcp__proxy__echo_[0-9a-f]{8}$/), "mcp__proxy__run"]);
+
+      // Pi now also lists this adapter's own registrations; a re-sync must not rename them.
+      piTools.push(...first.map((name) => ({ name })));
+      mocks.loadMetadataCache.mockReturnValue({ version: 1, servers: { proxy: cacheEntry(config.mcpServers.proxy!, { tools: [echoTool, { name: "run" }, { name: "late" }] }) } });
+      state.onToolMetadataUpdated("proxy", "tools-list-changed");
+
+      expect(deferredNames()).toEqual([...first, "mcp__proxy__late"]);
+    });
+
+    it("re-registers the deferred tools of a disabled or removed server as hidden", async () => {
+      const { api, config, proxyTool } = await bootCached({ proxy: [{ command: "x" }, [echoTool]], gone: [{ command: "g" }, [{ name: "run" }]] });
+      (config.mcpServers.proxy as Record<string, unknown>).disabled = true;
+      delete config.mcpServers.gone;
+      mocks.executeConnect.mockResolvedValue({ content: [{ type: "text", text: "connected" }] });
+
+      await proxyTool.execute("c1", { connect: "proxy" });
+
+      for (const name of ["mcp__proxy__echo", "mcp__gone__run"]) {
+        const registered = registrations(api, name);
+        expect(registered.at(-1)).toMatchObject({ exposure: "hidden", execute: registered[0].execute });
+      }
+    });
+
+    it("keeps deferred tools registered through failure backoff, and gives a backed-off direct server's tools none", async () => {
+      const { api, state, activeTools } = await bootCached({
+        direct: [{ command: "d", directTools: true, lifecycle: "eager" }, [{ name: "find" }]],
+        proxy: [{ command: "x" }, [echoTool]],
+      });
+      await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+      const before = api.registerTool.mock.calls.length;
+      state.failureTracker.set("direct", Date.now());
+      state.failureTracker.set("proxy", Date.now());
+
+      state.onToolMetadataUpdated("proxy", "failure-backoff-started");
+
+      expect(activeTools()).not.toContain("direct_find");
+      const registeredSince = api.registerTool.mock.calls.slice(before).map((call: any[]) => call[0].name);
+      expect(registeredSince.filter((name: string) => name.startsWith("mcp__proxy__") || name.startsWith("mcp__direct__"))).toEqual([]);
+      expect(registrations(api, "mcp__proxy__echo")).toMatchObject([{ exposure: "deferred" }]);
+    });
+
+    it("registers no deferred tools with MCP_DIRECT_TOOLS=__none__", async () => {
+      vi.stubEnv("MCP_DIRECT_TOOLS", "__none__");
+      try {
+        const { api, handlers } = await bootCached({ proxy: [{ command: "x" }, [echoTool]] });
+        expect(registrations(api, "mcp__proxy__echo")).toEqual([]);
+        // No tool_call handler, so Pi skips its tool_call pipeline for every call.
+        expect(handlers.has("tool_call")).toBe(false);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("freezes the deferred surface with settings.freezeDirectTools", async () => {
+      const { api, config, state } = await bootCached({ proxy: [{ command: "x", lifecycle: "eager" }, [echoTool]] }, { freezeDirectTools: true });
+      await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+      mocks.loadMetadataCache.mockReturnValue({ version: 1, servers: { proxy: cacheEntry(config.mcpServers.proxy!, { tools: [echoTool, { name: "late" }] }) } });
+
+      state.onToolMetadataUpdated("proxy", "tools-changed");
+
+      expect(registrations(api, "mcp__proxy__echo")).toHaveLength(1);
+      expect(registrations(api, "mcp__proxy__late")).toEqual([]);
+    });
+
+    it("registers nothing new before Pi 0.99, and the proxy keeps its exact key list", async () => {
+      const { api, handlers } = await bootCached({ proxy: [{ command: "x" }, [echoTool]] }, {}, false);
+
+      expect(api.registerTool.mock.calls.map((call: any[]) => call[0].name).filter((name: string) => name.startsWith("mcp__proxy__"))).toEqual([]);
+      expect(handlers.has("tool_call")).toBe(false);
+      expect(Object.keys(registeredTool(api, "mcp"))).toEqual(
+        ["name", "label", "description", "promptSnippet", "renderShell", "renderCall", "parameters", "renderResult", "execute"],
+      );
+      expect(registeredTool(api, "mcp__proxy")).not.toHaveProperty("reachesTools");
+    });
+
+    it("declares what mcp, mcpScript and a namespace proxy reach", async () => {
+      const { api } = await bootCached({ proxy: [{ command: "x" }, [echoTool]] }, { scriptMode: true });
+
+      expect(registeredTool(api, "mcp").reachesTools()).toBe("all");
+      expect(registeredTool(api, "mcpScript").reachesTools()).toBe("all");
+      expect(registeredTool(api, "mcp__proxy").reachesTools()).toEqual(["mcp__proxy"]);
+    });
+
+    const textBlocks = (value: string) => [{ type: "text", text: value }];
+    const echoCall = (originalName = "echo") => ({
+      serverName: "proxy",
+      toolMeta: { name: `proxy_${originalName}`, originalName, description: "" },
+      args: { value: "v" },
+      callIdentity: { server: "proxy", tool: originalName, canonicalTool: `proxy_${originalName}` },
+    });
+
+    // The hand-off the mcp proxy gives executeCall for a call in this tool context.
+    async function proxyHandOff(api: any, ctx: unknown, tool = "proxy_echo") {
+      let handOff: any;
+      mocks.executeCall.mockImplementationOnce(async (...args: any[]) => {
+        handOff = args[9];
+        return { content: [], details: {} };
+      });
+      await registeredTool(api, "mcp").execute("c1", { tool }, undefined, undefined, ctx);
+      return handOff;
+    }
+
+    function nestedContext(api: any, tools: string[]) {
+      const ctx: { tools: { name: string }[]; executeTool: ReturnType<typeof vi.fn> } = {
+        tools: tools.map((name) => ({ name })),
+        // Pi's nested pipeline: run the registered tool as `<caller>/1`, turning a throw into an error result.
+        executeTool: vi.fn(async (name: string, args: unknown) => {
+          try {
+            return { result: await registeredTool(api, name).execute("c1/1", args, undefined, undefined, ctx), isError: false };
+          } catch (error) {
+            return { result: { content: textBlocks(String(error)), details: {} }, isError: true };
+          }
+        }),
+      };
+      return ctx;
+    }
+
+    it("keeps calls in the proxy before Pi 0.99 and without ctx.executeTool", async () => {
+      const old = await bootCached({ proxy: [{ command: "x" }, [echoTool]] }, {}, false);
+      expect(await proxyHandOff(old.api, nestedContext(old.api, ["mcp__proxy__echo"]))).toBeUndefined();
+      const { api } = await bootCached({ proxy: [{ command: "x" }, [echoTool]] });
+      expect(await proxyHandOff(api, { hasUI: false })).toBeUndefined();
+      expect(await proxyHandOff(api, nestedContext(api, ["mcp__proxy__echo"]))).toBeTypeOf("function");
+    });
+
+    it("runs a handed-off call in the proxy under the registered tool, and reports a blocked or throwing one", async () => {
+      const { api } = await bootCached({ proxy: [{ command: "x" }, [echoTool]] });
+      const ctx = nestedContext(api, ["mcp__proxy__echo"]);
+      // The model names the tool loosely; the nested leg gets the canonical name.
+      const handOff = await proxyHandOff(api, ctx, "echo");
+      const inProxy = { content: textBlocks("echoed"), details: { mode: "call", server: "proxy", tool: "echo", canonicalTool: "proxy_echo" } };
+      mocks.executeCall.mockResolvedValueOnce(inProxy);
+
+      await expect(handOff(echoCall())).resolves.toEqual(inProxy);
+      expect(ctx.executeTool).toHaveBeenCalledWith("mcp__proxy__echo", { value: "v" });
+      expect(mocks.executeCall).toHaveBeenLastCalledWith(expect.anything(), "proxy_echo", { value: "v" }, "proxy", expect.any(Function), undefined, undefined, undefined, "c1");
+
+      ctx.executeTool.mockResolvedValueOnce({ result: { content: textBlocks("Blocked by policy"), details: {} }, isError: true });
+      await expect(handOff(echoCall())).resolves.toEqual({
+        content: textBlocks("Blocked by policy"),
+        details: { mode: "call", error: "nested_call_failed", server: "proxy", tool: "echo", canonicalTool: "proxy_echo" },
+      });
+
+      mocks.executeCall.mockRejectedValueOnce(new Error("aborted"));
+      await expect(handOff(echoCall())).rejects.toThrow("aborted");
+    });
+
+    it("answers tool_not_registered only after a forced registration, and keeps frozen or uncallable tools in the proxy", async () => {
+      const { api, config } = await bootCached({ proxy: [{ command: "x" }, [echoTool]] });
+      const ctx = nestedContext(api, []);
+      const handOff = await proxyHandOff(api, ctx);
+
+      await expect(handOff(echoCall("ghost"))).resolves.toMatchObject({ details: { mode: "call", error: "tool_not_registered", server: "proxy", tool: "ghost" } });
+      // Registered, but not callable, as when the host deactivated a direct tool.
+      await expect(handOff(echoCall())).resolves.toBeUndefined();
+      expect(ctx.executeTool).not.toHaveBeenCalled();
+
+      mocks.loadMetadataCache.mockReturnValue({ version: 1, servers: { proxy: cacheEntry(config.mcpServers.proxy!, { tools: [echoTool, { name: "late" }] }) } });
+      ctx.tools.push({ name: "mcp__proxy__late" });
+      mocks.executeCall.mockResolvedValueOnce({ content: textBlocks("late"), details: { mode: "call" } });
+      await expect(handOff(echoCall("late"))).resolves.toEqual({ content: textBlocks("late"), details: { mode: "call" } });
+      expect(ctx.executeTool).toHaveBeenCalledWith("mcp__proxy__late", { value: "v" });
+
+      const frozen = await bootCached({ proxy: [{ command: "x", lifecycle: "eager" }, [echoTool]] }, { freezeDirectTools: true });
+      await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(frozen.state));
+      const frozenHandOff = await proxyHandOff(frozen.api, nestedContext(frozen.api, []));
+      await expect(frozenHandOff(echoCall("ghost"))).resolves.toBeUndefined();
+    });
+
+    // A booted session with a registered server, plus `docs`, configured but never connected.
+    async function bootWithUnconnectedServer(settings: Record<string, unknown> = {}) {
+      const booted = await bootCached({ proxy: [{ command: "x", lifecycle: "eager" }, [echoTool]] }, settings);
+      await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(booted.state));
+      booted.config.mcpServers.docs = { command: "d" };
+      booted.state.manager.isConnecting = vi.fn(() => false);
+      const connectDocs = () => {
+        mocks.loadMetadataCache.mockReturnValue({
+          version: 1,
+          servers: {
+            proxy: cacheEntry(booted.config.mcpServers.proxy!, { tools: [echoTool] }),
+            docs: cacheEntry(booted.config.mcpServers.docs, { tools: [{ name: "find" }] }),
+          },
+        });
+        booted.state.onToolMetadataUpdated("docs", "lazy-connect");
+        return true;
+      };
+      const toolCall = (toolName: string, input: unknown, signal?: AbortSignal) =>
+        booted.handlers.get("tool_call")!({ type: "tool_call", toolName, toolCallId: "t1", input }, { signal });
+      return { ...booted, connectDocs, toolCall };
+    }
+    const scriptWords = (input: { code: string }) => input.code.match(/\w+/g) ?? [];
+
+    it("connects the one unregistered server a named reach names and registers it before the call runs", async () => {
+      const { api, state, connectDocs, toolCall } = await bootWithUnconnectedServer();
+      api.getAllTools.mockReturnValue([{ name: "codemode", reachesTools: scriptWords }]);
+      mocks.lazyConnect.mockImplementation(async () => connectDocs());
+
+      await toolCall("codemode", { code: "await tools.mcp__docs__find({}); await tools.mcp__proxy__echo({})" });
+      expect(registeredTool(api, "mcp__docs__find")).toMatchObject({ exposure: "deferred" });
+      await toolCall("codemode", { code: "await tools.mcp__docs__find({})" });
+
+      expect(mocks.lazyConnect.mock.calls).toEqual([[state, "docs", undefined]]);
+    });
+
+    it("lets a reach of all await a connection already in flight, and start none", async () => {
+      const { api, config, state, connectDocs, toolCall } = await bootWithUnconnectedServer();
+      config.mcpServers.idle = { command: "i" };
+      state.manager.isConnecting = vi.fn((serverName: string) => serverName === "docs");
+      let finishConnect!: () => void;
+      mocks.lazyConnect.mockImplementation(() => new Promise((resolveConnect) => { finishConnect = () => resolveConnect(connectDocs()); }));
+      api.getAllTools.mockReturnValue([{ name: "tool_search", reachesTools: () => "all" }]);
+
+      const call = toolCall("tool_search", { query: "find" });
+      await vi.waitFor(() => expect(mocks.lazyConnect).toHaveBeenCalled());
+      expect(registeredTool(api, "mcp__docs__find")).toBeUndefined();
+      finishConnect();
+      await call;
+
+      expect(registeredTool(api, "mcp__docs__find")).toMatchObject({ exposure: "deferred" });
+      expect(mocks.lazyConnect.mock.calls.map((callArgs: unknown[]) => callArgs[1])).toEqual(["docs"]);
+    });
+
+    it("lets the call run when the connect fails or does not finish", async () => {
+      const { api, toolCall } = await bootWithUnconnectedServer();
+      api.getAllTools.mockReturnValue([{ name: "codemode", reachesTools: scriptWords }]);
+      mocks.lazyConnect.mockResolvedValueOnce(false).mockReturnValueOnce(new Promise(() => {}));
+
+      await expect(toolCall("codemode", { code: "tools.mcp__docs__find()" })).resolves.toBeUndefined();
+      const controller = new AbortController();
+      const hanging = toolCall("codemode", { code: "tools.mcp__docs__find()" }, controller.signal);
+      await vi.waitFor(() => expect(mocks.lazyConnect).toHaveBeenCalledTimes(2));
+      controller.abort();
+      await expect(hanging).resolves.toBeUndefined();
+      expect(registeredTool(api, "mcp__docs__find")).toBeUndefined();
+    });
+
+    it("re-registers a deferred tool whose cached description changed, and nothing on an unchanged re-sync", async () => {
+      const { api, config, state } = await bootCached({ proxy: [{ command: "x", lifecycle: "eager" }, [echoTool]] });
+      await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+      const registered = api.registerTool.mock.calls.length;
+
+      // A connect restamps the entry's cachedAt (withSessionMetadata does on every sync) with the same tools.
+      mocks.loadMetadataCache.mockReturnValue({ version: 1, servers: { proxy: { ...cacheEntry(config.mcpServers.proxy!, { tools: [echoTool] }), cachedAt: Date.now() + 1 } } });
+      state.onToolMetadataUpdated("proxy", "lazy-connect");
+      state.onToolMetadataUpdated("proxy", "lazy-connect");
+      expect(api.registerTool.mock.calls.length).toBe(registered);
+
+      mocks.loadMetadataCache.mockReturnValue({ version: 1, servers: { proxy: { ...cacheEntry(config.mcpServers.proxy!, { tools: [{ ...echoTool, description: "Echo, now louder" }] }), cachedAt: Date.now() + 1 } } });
+      state.onToolMetadataUpdated("proxy", "tools-list-changed");
+
+      expect(registrations(api, "mcp__proxy__echo").at(-1)).toMatchObject({ description: "Echo, now louder", exposure: "deferred" });
+    });
+
+    it("adds and withdraws deferred tools when a server's tool list changes", async () => {
+      const { api, config, state } = await bootCached({ proxy: [{ command: "x", lifecycle: "eager" }, [echoTool, { name: "old" }]] });
+      await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+      mocks.loadMetadataCache.mockReturnValue({ version: 1, servers: { proxy: cacheEntry(config.mcpServers.proxy!, { tools: [echoTool, { name: "new" }] }) } });
+
+      state.onToolMetadataUpdated("proxy", "tools-list-changed");
+
+      expect(registeredTool(api, "mcp__proxy__new")).toMatchObject({ exposure: "deferred" });
+      expect(registrations(api, "mcp__proxy__old").at(-1)).toMatchObject({ exposure: "hidden" });
+    });
+
+    it("never gives a name to a different tool within the session when the tool list changes", async () => {
+      const { api, config, state } = await bootCached({ s: [{ command: "x", lifecycle: "eager" }, [{ name: "a_b" }]] });
+      await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+      expect(registeredTool(api, "mcp__s__a_b")).toMatchObject({ label: "MCP: a_b", exposure: "deferred" });
+      mocks.loadMetadataCache.mockReturnValue({ version: 1, servers: { s: cacheEntry(config.mcpServers.s!, { tools: [{ name: "a-b" }] }) } });
+
+      state.onToolMetadataUpdated("s", "tools-list-changed");
+
+      const replacement = api.registerTool.mock.calls.map((call: any[]) => call[0]).find((tool: { label: string }) => tool.label === "MCP: a-b");
+      expect(replacement).toMatchObject({ name: expect.stringMatching(/^mcp__s__a_b_[0-9a-f]{8}$/), exposure: "deferred" });
+      expect(registrations(api, "mcp__s__a_b").map((tool: { label: string }) => tool.label)).not.toContain("MCP: a-b");
+    });
+
+    it("keeps a resource tool registered as its URI changes, and gives same-named resources distinct names", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { api, config, state } = await bootCached({ s: [{ command: "x", lifecycle: "eager" }, []] });
+        await vi.waitFor(() => expect(mocks.updateStatusBar).toHaveBeenCalledWith(state));
+        const deferredNamesFor = (uri: string) => api.registerTool.mock.calls.map((call: any[]) => call[0])
+          .filter((tool: { description: string; exposure?: string }) => tool.description === `Read resource: ${uri}` && tool.exposure === "deferred")
+          .map((tool: { name: string }) => tool.name);
+        const syncResources = (uris: string[]) => {
+          mocks.loadMetadataCache.mockReturnValue({ version: 1, servers: { s: cacheEntry(config.mcpServers.s!, { tools: [], resources: uris.map((uri) => ({ name: "guide", uri })) }) } });
+          state.onToolMetadataUpdated("s", "tools-list-changed");
+        };
+
+        for (const uri of ["file:///guide-1", "file:///guide-2", "file:///guide-3"]) {
+          syncResources([uri]);
+          expect(deferredNamesFor(uri)).toHaveLength(1);
+        }
+        syncResources(["file:///guide-4", "file:///guide-5"]);
+        const [fourth] = deferredNamesFor("file:///guide-4");
+        const [fifth] = deferredNamesFor("file:///guide-5");
+        expect([fourth, fifth]).toEqual([expect.stringMatching(/^mcp__s__read_guide_[0-9a-f]{8}$/), expect.stringMatching(/^mcp__s__read_guide_[0-9a-f]{8}$/)]);
+        expect(fourth).not.toBe(fifth);
+        expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("skipping"));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("does nothing for a tool without reachesTools, as before Pi 1.2, and skips its own MCP tools without a lookup", async () => {
+      const { api, toolCall } = await bootWithUnconnectedServer();
+      api.getAllTools.mockReturnValue([{ name: "codemode" }, { name: "bash" }]);
+      api.getAllTools.mockClear(); // Each sync reads it once to keep other extensions' tool names.
+
+      await toolCall("codemode", { code: "tools.mcp__docs__find()" });
+      await toolCall("bash", { command: "mcp__docs__find" });
+      expect(api.getAllTools).toHaveBeenCalledTimes(1);
+      await toolCall("mcp__proxy__echo", {});
+
+      expect(api.getAllTools).toHaveBeenCalledTimes(1);
+      expect(mocks.lazyConnect).not.toHaveBeenCalled();
+    });
+
+    it("starts a deferred session's runtime for a reach that names a server without cached tools, and nothing for an \"all\" reach", async () => {
+      const { resolveDirectTools } = await vi.importActual<typeof import("../direct-tool-surface.ts")>("../direct-tool-surface.ts");
+      mocks.resolveDirectTools.mockImplementation(resolveDirectTools);
+      const proxy = { command: "x" };
+      const docs = { command: "d" };
+      mocks.loadMetadataCache.mockReturnValue({ version: 1, servers: { proxy: cacheEntry(proxy, { tools: [echoTool] }) } });
+      const { api, handlers, state } = await bootPi099(undefined, { settings: { scriptMode: false, deferWithMissingMetadata: true }, mcpServers: { proxy, docs } });
+      api.getAllTools.mockReturnValue([{ name: "tool_search", reachesTools: () => "all" }, { name: "codemode", reachesTools: scriptWords }]);
+      mocks.lazyConnect.mockImplementation(async () => {
+        mocks.loadMetadataCache.mockReturnValue({ version: 1, servers: { proxy: cacheEntry(proxy, { tools: [echoTool] }), docs: cacheEntry(docs, { tools: [{ name: "find" }] }) } });
+        state.onToolMetadataUpdated("docs", "lazy-connect");
+        return true;
+      });
+      const toolCall = (toolName: string, input: unknown) =>
+        handlers.get("tool_call")!({ type: "tool_call", toolName, toolCallId: "t1", input }, { signal: undefined, cwd: process.cwd(), hasUI: false });
+      expect(registeredTool(api, "mcp__proxy__echo")).toMatchObject({ exposure: "deferred" });
+
+      await toolCall("tool_search", { query: "find" });
+      expect(mocks.initializeMcp).not.toHaveBeenCalled();
+
+      await toolCall("codemode", { code: "await tools.mcp__docs__find({})" });
+      expect(mocks.initializeMcp).toHaveBeenCalledTimes(1);
+      expect(mocks.lazyConnect).toHaveBeenCalledWith(state, "docs", undefined);
+      expect(registeredTool(api, "mcp__docs__find")).toMatchObject({ exposure: "deferred" });
+    });
+
+    it("registers nothing for a reaching call when settings.freezeDirectTools is set", async () => {
+      const { api, toolCall, connectDocs } = await bootWithUnconnectedServer({ freezeDirectTools: true });
+      api.getAllTools.mockReturnValue([{ name: "codemode", reachesTools: scriptWords }]);
+      mocks.lazyConnect.mockImplementation(async () => connectDocs());
+
+      await toolCall("codemode", { code: "tools.mcp__docs__find()" });
+
+      expect(mocks.lazyConnect).not.toHaveBeenCalled();
+      expect(registeredTool(api, "mcp__docs__find")).toBeUndefined();
+    });
+
+    it("returns at once for an already-aborted reaching call while initialization is pending", async () => {
+      const config = { settings: { scriptMode: false }, mcpServers: { docs: { command: "d", lifecycle: "eager" } } };
+      mocks.loadMcpConfig.mockReturnValue(config);
+      mocks.initializeMcp.mockReturnValue(new Promise(() => {}));
+      const { default: mcpAdapter } = await import("../index.ts");
+      const { api, handlers } = createPi({ unregisterTool: false });
+      api.registerMcpServer = vi.fn();
+      api.getMcpServers = vi.fn(() => []);
+      api.getAllTools.mockReturnValue([{ name: "codemode", reachesTools: () => "all" }]);
+      mcpAdapter(api);
+      void handlers.get("session_start")?.({}, {});
+      await vi.waitFor(() => expect(mocks.initializeMcp).toHaveBeenCalled());
+      const controller = new AbortController();
+      controller.abort();
+
+      const call = handlers.get("tool_call")!({ type: "tool_call", toolName: "codemode", toolCallId: "t1", input: {} }, { signal: controller.signal });
+
+      await expect(Promise.race([call.then(() => "returned"), new Promise((resolveLate) => setTimeout(() => resolveLate("still waiting"), 200))]))
+        .resolves.toBe("returned");
+    });
+
+    it("does not re-sync on repeated reaching calls for a server that cannot connect", async () => {
+      const { api, toolCall } = await bootWithUnconnectedServer();
+      api.getAllTools.mockReturnValue([{ name: "codemode", reachesTools: scriptWords }]);
+      mocks.lazyConnect.mockResolvedValue(false);
+      const cacheReads = mocks.loadMetadataCache.mock.calls.length;
+
+      await toolCall("codemode", { code: "tools.mcp__docs__find()" });
+      await toolCall("codemode", { code: "tools.mcp__docs__find()" });
+
+      expect(mocks.loadMetadataCache.mock.calls.length).toBe(cacheReads);
+      expect(registeredTool(api, "mcp__docs__find")).toBeUndefined();
+    });
+
+    it("connects every unregistered server a named reach names", async () => {
+      const { api, config, state, toolCall } = await bootWithUnconnectedServer();
+      config.mcpServers.gh = { command: "g" };
+      const connected = new Set<string>();
+      mocks.lazyConnect.mockImplementation(async (_state: unknown, serverName: string) => {
+        connected.add(serverName);
+        mocks.loadMetadataCache.mockReturnValue({
+          version: 1,
+          servers: {
+            proxy: cacheEntry(config.mcpServers.proxy!, { tools: [echoTool] }),
+            ...(connected.has("docs") ? { docs: cacheEntry(config.mcpServers.docs, { tools: [{ name: "find" }] }) } : {}),
+            ...(connected.has("gh") ? { gh: cacheEntry(config.mcpServers.gh, { tools: [{ name: "issues" }] }) } : {}),
+          },
+        });
+        state.onToolMetadataUpdated(serverName, "lazy-connect");
+        return true;
+      });
+      api.getAllTools.mockReturnValue([{ name: "codemode", reachesTools: scriptWords }]);
+
+      await toolCall("codemode", { code: "await tools.mcp__docs__find({}); await tools.mcp__gh__issues({})" });
+
+      expect([...connected].sort()).toEqual(["docs", "gh"]);
+      expect(registeredTool(api, "mcp__docs__find")).toMatchObject({ exposure: "deferred" });
+      expect(registeredTool(api, "mcp__gh__issues")).toMatchObject({ exposure: "deferred" });
+    });
+
+    it("leaves mcp, mcpScript and the namespace proxies to connect on their own, keeping their first-call errors", async () => {
+      const { api, toolCall } = await bootWithUnconnectedServer();
+      // Even a proxy reach that names the unconnected server must not connect it ahead of the proxy's own call.
+      const reachesDocs = vi.fn(() => ["mcp__docs"]);
+      api.getAllTools.mockReturnValue(["mcp", "mcpScript", "mcp__proxy"].map((name) => ({ name, reachesTools: reachesDocs })));
+
+      for (const name of ["mcp", "mcpScript", "mcp__proxy"]) await toolCall(name, { tool: "find" });
+
+      expect(reachesDocs).not.toHaveBeenCalled();
+      expect(mocks.lazyConnect).not.toHaveBeenCalled();
     });
   });
 });

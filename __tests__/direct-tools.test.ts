@@ -10,7 +10,8 @@ import {
 } from "../metadata-cache.ts";
 import { buildToolMetadata } from "../tool-metadata.ts";
 import { formatToolName } from "../types.ts";
-import type { McpConfig } from "../types.ts";
+import type { McpConfig, ServerEntry } from "../types.ts";
+import { resolveDeferredToolSpecs } from "../deferred-tool-surface.ts";
 import { reconstructToolMetadata } from "../metadata-cache.ts";
 import { updateServerMetadata } from "../init.ts";
 import { markBuiltInAgentPlugin } from "../agent-plugin-provenance.ts";
@@ -55,6 +56,51 @@ describe("formatToolName", () => {
       "my_20_server_find",
       "my_20_server_read_guide",
     ]);
+  });
+});
+
+describe("deferred tool names", () => {
+  function deferredNames(servers: Record<string, [ServerEntry, string[]]>, settings: McpConfig["settings"] = {}, reserved: { names?: string[]; directTools?: { serverName: string; originalName: string }[] } = {}) {
+    const entries = Object.entries(servers);
+    const config: McpConfig = { settings, mcpServers: Object.fromEntries(entries.map(([name, [definition]]) => [name, definition])) };
+    const cache: MetadataCache = {
+      version: 1,
+      servers: Object.fromEntries(entries.map(([name, [definition, tools]]) => [name, {
+        configHash: computeServerHash(definition), cachedAt: Date.now(), tools: tools.map((tool) => ({ name: tool })), resources: [],
+      }])),
+    };
+    return resolveDeferredToolSpecs(config, cache, { names: new Set(reserved.names), directTools: reserved.directTools ?? [] }).map((spec) => spec.name);
+  }
+
+  it("keeps same-named tools of two toolPrefix none servers apart, and skips the one registered direct", () => {
+    const servers = { a: [{ command: "a" }, ["search"]], b: [{ command: "b" }, ["search"]], c: [{ command: "c" }, ["search"]] } satisfies Record<string, [ServerEntry, string[]]>;
+    expect(deferredNames(servers, { toolPrefix: "none" }, { names: ["search"], directTools: [{ serverName: "a", originalName: "search" }] }))
+      .toEqual(["mcp__b__search", "mcp__c__search"]);
+  });
+
+  it("hashes a name that sanitizing, the 64-character limit, or a reserved name would make collide", () => {
+    const long = "x".repeat(80);
+    const [dashed, collapsed, capped, reserved, plain] = deferredNames(
+      { "a-b": [{ command: "a" }, ["a-b", "a_b", long]], docs: [{ command: "d" }, ["find", "list"]] },
+      {},
+      { names: ["mcp__docs__find"] },
+    );
+    expect(dashed).toMatch(/^mcp__a_b__a_b_[0-9a-f]{8}$/);
+    expect(collapsed).toMatch(/^mcp__a_b__a_b_[0-9a-f]{8}$/);
+    expect(capped).toHaveLength(64);
+    expect(capped).toMatch(/^mcp__a_b__x+_[0-9a-f]{8}$/);
+    expect(reserved).toMatch(/^mcp__docs__find_[0-9a-f]{8}$/);
+    expect(plain).toBe("mcp__docs__list");
+    expect(new Set([dashed, collapsed, capped, reserved, plain]).size).toBe(5);
+  });
+
+  it("hashes every tool sharing a plain name, so list order never decides which one keeps it", () => {
+    const names = deferredNames({ s: [{ command: "s" }, ["a-b", "a_b"]] });
+    const reversed = deferredNames({ s: [{ command: "s" }, ["a_b", "a-b"]] });
+
+    expect(names).toHaveLength(2);
+    expect(names).not.toContain("mcp__s__a_b");
+    expect(reversed).toEqual([...names].reverse());
   });
 });
 
