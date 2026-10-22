@@ -3,7 +3,7 @@ import { UrlElicitationRequiredError, type Client } from "@modelcontextprotocol/
 import type { McpExtensionState } from "./state.ts";
 import { disabledServerReason } from "./project-server-trust.ts";
 import type { DirectToolSpec, McpContent } from "./types.ts";
-import { lazyConnect, clearFailure } from "./init.ts";
+import { lazyConnect, clearFailure, repageExecutorCatalog } from "./init.ts";
 import { describeFailure } from "./failure-backoff.ts";
 import { abortable, throwIfAborted } from "./abort.ts";
 import { formatSchema } from "./tool-metadata.ts";
@@ -18,6 +18,7 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts";
 import { callToolViaTaskSession } from "./mcp-tasks.ts";
 import { callToolPausingForElicitation } from "./elicitation-handler.ts";
 import { callToolAnsweringExecutorPauses } from "./executor-pauses.ts";
+import { executorCallParams, executorUnknownToolMatches, executorUnknownToolText, unwrapExecutorCallResult } from "./executor-app-tools.ts";
 import { observedOutputRecorder } from "./output-shape.ts";
 import { ensureToolCallApproved, type ToolCallApprovalResult } from "./tool-approval.ts";
 import { getInputRequiredNeedsUiDetails } from "./errors.ts";
@@ -327,7 +328,10 @@ export function createDirectToolExecutor(
 
       const requestMeta = withToolCallIdMeta(uiSession?.requestMeta, toolCallId);
       const recordOutput = observedOutputRecorder(state, spec.serverName, spec.originalName);
-      const result = await withSessionRecovery<ClientCallToolResult>(
+      const callParams = spec.executorPath !== undefined
+        ? executorCallParams(spec.executorPath, normalizedParams)
+        : { name: spec.originalName, arguments: normalizedParams };
+      const callResult = await withSessionRecovery<ClientCallToolResult>(
         {
           manager: state.manager,
           config: state.config,
@@ -341,7 +345,8 @@ export function createDirectToolExecutor(
             conn,
             manager: state.manager,
             serverName: spec.serverName,
-            params: { name: spec.originalName, arguments: normalizedParams, _meta: requestMeta },
+            params: { ...callParams, _meta: requestMeta },
+            toolName: spec.originalName,
             requestOptions,
             signal: ownedSignal,
             call: async (params, options) => {
@@ -359,6 +364,15 @@ export function createDirectToolExecutor(
           });
         },
       );
+      const result = spec.executorPath !== undefined ? unwrapExecutorCallResult(spec.executorPath, callResult) : callResult;
+      const executorMatches = spec.executorPath !== undefined ? executorUnknownToolMatches(spec.executorPath, callResult) : undefined;
+      if (executorMatches) {
+        await repageExecutorCatalog(state, spec.serverName, ownedSignal);
+        return {
+          content: [{ type: "text" as const, text: executorUnknownToolText(spec.originalName, executorMatches) }],
+          details: { error: "tool_not_found", server: spec.serverName, suggestions: executorMatches },
+        };
+      }
       uiSession?.sendToolResult(result as unknown as import("@modelcontextprotocol/client").CallToolResult);
       if (!result.isError) recordOutput(result as Record<string, unknown>);
 

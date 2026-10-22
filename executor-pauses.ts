@@ -26,15 +26,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * The name check accepts an absent name: on a 2026-07-28 connect the SDK reads serverInfo only
  * from discover `_meta["io.modelcontextprotocol/serverInfo"]`, and Executor returns serverInfo
  * as a top-level discover field, so a real Executor may report no name at all.
- * The `resume` schema check keeps out Executor's browser mode, whose `resume` takes only a
- * requestId because the operator answers in the browser.
  */
-function isExecutorConnection(conn: Pick<ServerConnection, "client" | "tools">): boolean {
-  const name = conn.client.getServerVersion?.()?.name;
+export function isExecutorConnection(conn: Pick<ServerConnection, "client" | "tools">): boolean {
+  const name = conn.client?.getServerVersion?.()?.name;
   if (name !== undefined && name !== "Executor") return false;
-  const resume = conn.tools.find(tool => tool.name === "resume")?.inputSchema?.properties;
-  return conn.tools.some(tool => tool.name === "execute")
-    && conn.tools.some(tool => tool.name === "call")
+  return hasExecutorModelTools(conn.tools);
+}
+
+/**
+ * Executor's model-mode tools: `execute`, `call` and a `resume` that takes the answer. The `resume`
+ * schema check keeps out Executor's browser mode, whose `resume` takes only a requestId because
+ * the operator answers in the browser.
+ */
+export function hasExecutorModelTools(tools: ReadonlyArray<{ name: string; inputSchema?: unknown }>): boolean {
+  const schema = tools.find(tool => tool.name === "resume")?.inputSchema;
+  const resume = isRecord(schema) ? schema.properties : undefined;
+  return tools.some(tool => tool.name === "execute")
+    && tools.some(tool => tool.name === "call")
     && isRecord(resume) && "requestId" in resume && "response" in resume;
 }
 
@@ -97,12 +105,14 @@ function redactExecutorOutcome<T extends object>(result: T): T | TextResult {
  * through Executor's own link and retries the call once. Otherwise the result stands unchanged.
  */
 export async function callToolAnsweringExecutorPauses<T extends object>({
-  conn, manager, serverName, params, requestOptions, signal, call,
+  conn, manager, serverName, params, toolName, requestOptions, signal, call,
 }: {
   conn: Pick<ServerConnection, "client" | "definition" | "tools">;
   manager: Pick<McpServerManager, "promptFormElicitation" | "urlElicitationPrompt">;
   serverName: string;
   params: ToolCallParams;
+  /** The tool the user knows, when `params` names another: an Executor app tool's path, sent through `call`. */
+  toolName?: string;
   requestOptions: RequestOptions | undefined;
   signal?: AbortSignal | undefined;
   call: (params: ToolCallParams, options: RequestOptions | undefined) => Promise<T>;
@@ -119,7 +129,7 @@ export async function callToolAnsweringExecutorPauses<T extends object>({
   const options = Number.isFinite(serverTimeout) && serverTimeout > 0
     ? requestOptions
     : { ...requestOptions, timeout: Math.max(requestOptions?.timeout ?? 0, EXECUTOR_REQUEST_TIMEOUT_MS) };
-  const answer = () => answerPauses({ manager, serverName, params, options, signal, call });
+  const answer = () => answerPauses({ manager, serverName, params, toolName: toolName ?? params.name, options, signal, call });
   const result = await answer();
   const gap = findAccountGap(params, result);
   if (!gap?.retrySafe) return result;
@@ -134,10 +144,11 @@ export async function callToolAnsweringExecutorPauses<T extends object>({
   return connected === "connected" ? answer() : result;
 }
 
-async function answerPauses<T extends object>({ manager, serverName, params, options, signal, call }: {
+async function answerPauses<T extends object>({ manager, serverName, params, toolName, options, signal, call }: {
   manager: Pick<McpServerManager, "promptFormElicitation">;
   serverName: string;
   params: ToolCallParams;
+  toolName: string;
   options: RequestOptions | undefined;
   signal?: AbortSignal | undefined;
   call: (params: ToolCallParams, options: RequestOptions | undefined) => Promise<T>;
@@ -150,7 +161,7 @@ async function answerPauses<T extends object>({ manager, serverName, params, opt
     const decision = await manager.promptFormElicitation(serverName, pause.elicitation, signal);
     if (!decision) {
       return textResult(
-        `MCP tool "${params.name}" on server "${serverName}" paused for your `
+        `MCP tool "${toolName}" on server "${serverName}" paused for your `
           + `${pause.status === "approval-required" ? "approval" : "input"}, which Pi can only ask for `
           + "in an interactive Pi session with MCP input enabled. Run it there and try again.",
         true,

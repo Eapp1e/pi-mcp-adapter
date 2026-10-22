@@ -1,8 +1,8 @@
 import { Check, Errors } from "typebox/value";
 import type { DirectToolSpec, McpConfig, ServerCacheEntry, ServerEntry, ToolPrefix, ToolSelectorCandidateIndex } from "./types.ts";
-import { createToolSelectorCandidateIndex, formatToolName, getToolNameCandidates, isServerDisabled, isToolAllowed, resolveToolPrefix, resolveUniqueNameOwnership } from "./types.ts";
+import { createToolSelectorCandidateIndex, EXECUTOR_APP_TOOL_CAP, formatToolName, getToolNameCandidates, isServerDisabled, isToolAllowed, resolveToolPrefix, resolveUniqueNameOwnership } from "./types.ts";
 import type { MetadataCache } from "./metadata-cache.ts";
-import { isServerCacheValid, parseDirectToolSelectors } from "./metadata-cache.ts";
+import { isExecutorOwnTool, isServerCacheValid, isUsableCachedAppTool, parseDirectToolSelectors } from "./metadata-cache.ts";
 export { getMissingConfiguredDirectToolServers } from "./metadata-cache.ts";
 import { isUiToolVisibleToModel } from "./ui-tool-visibility.ts";
 import { resourceNameToToolName } from "./resource-tools.ts";
@@ -84,6 +84,10 @@ function createSelectorCandidateIndex(config: McpConfig, cache: MetadataCache, p
         const baseName = `read_${resourceNameToToolName(resource.name)}`;
         for (const candidate of getToolNameCandidates(baseName, otherServerName, otherPrefix, false)) candidates.add(candidate);
       }
+    }
+    for (const tool of (otherCache.executorApps?.tools ?? []).slice(0, EXECUTOR_APP_TOOL_CAP)) {
+      if (!isUsableCachedAppTool(tool) || isExecutorOwnTool(tool)) continue;
+      for (const candidate of getToolNameCandidates(tool.canonicalPath, otherServerName, otherPrefix, false)) candidates.add(candidate);
     }
   }
   return createToolSelectorCandidateIndex(candidates);

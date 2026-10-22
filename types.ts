@@ -757,6 +757,8 @@ export interface ToolMetadata {
   outputSchema?: unknown; // Server schema for structuredContent (stored for describe)
   uiStreamMode?: UiStreamMode;
   annotations?: McpToolAnnotations;
+  /** An Executor app tool: the exact path from Executor's `search`, which its `call` takes. `originalName` is the canonical path. */
+  executorPath?: string;
 }
 
 /** Behavior hints a server declared on a tool. Hints, not guarantees. */
@@ -788,6 +790,8 @@ export interface DirectToolSpec {
   resourceUri?: string;
   uiResourceUri?: string;
   uiStreamMode?: UiStreamMode;
+  /** An Executor app tool: the exact path from Executor's `search`, which its `call` takes. `originalName` is the canonical path. */
+  executorPath?: string;
 }
 
 export interface ServerProvenance {
@@ -836,6 +840,30 @@ export interface CachedPrompt {
   arguments?: { name: string; description?: string; required?: boolean }[];
 }
 
+/**
+ * Most Executor app tools kept and registered per server. Pi rebuilds its whole tool registry on
+ * every registration, so registering N tools costs O(N²). Paging stops here, and every read of a
+ * cached catalog takes no more, whatever the cache holds.
+ * @internal
+ */
+export const EXECUTOR_APP_TOOL_CAP = 1_000;
+
+/** One tool of an Executor app, as Executor's `search` lists it. */
+export interface CachedExecutorAppTool {
+  /** The exact path `search` returned, such as `tools.github.issues.list`. */
+  path: string;
+  /** The path without Executor's `tools.` prefix, such as `github.issues.list`. */
+  canonicalPath: string;
+  /** The first line of the tool's description. */
+  description: string;
+  /** The tool's input as a one-line TypeScript type; Executor gives no JSON Schema. */
+  inputType: string;
+  /** Executor cut `inputType`; `describe` has the whole signature. */
+  inputTruncated?: true;
+  /** The full TypeScript signature from Executor's `describe`. */
+  signature?: string;
+}
+
 export interface ServerCacheEntry {
   configHash: string;
   tools: CachedTool[];
@@ -852,6 +880,17 @@ export interface ServerCacheEntry {
   outputShapes?: Record<string, { source: "structuredContent" | "jsonText"; shape: unknown }>;
   /** Startup discovery failed for this config; the entry has no catalog. */
   discoveryFailed?: true;
+  /**
+   * An Executor server's app tools, in Executor's catalog order, up to `cap`. `total` counts every tool
+   * the catalog had. `unavailableApps` names the apps Executor could not list, with Executor's reason.
+   */
+  executorApps?: {
+    tools: CachedExecutorAppTool[];
+    total: number;
+    cap: number;
+    fetchedAt: number;
+    unavailableApps?: { name: string; reason?: string }[];
+  };
   cachedAt: number;
 }
 

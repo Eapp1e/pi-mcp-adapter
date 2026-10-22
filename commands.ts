@@ -27,7 +27,7 @@ import {
 import { markKeepAliveAfterConnect, notifyToolMetadataUpdated, updateMetadataCache, updateStatusBar, getFailureAgeSeconds, getFailureMessage, clearFailure, recordFailure } from "./init.ts";
 import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
 import { loadMetadataCache, reconstructPromptMetadata, withSessionMetadata } from "./metadata-cache.ts";
-import { buildToolMetadata } from "./tool-metadata.ts";
+import { buildToolMetadata, cacheReader, executorAppToolsLine, executorAppToolsStatus, executorCatalogNotes, ownTools } from "./tool-metadata.ts";
 import { supportsOAuth, authenticate, removeAuth, type McpOAuthRuntime } from "./mcp-auth-flow.ts";
 import { getAuthStorageOptions, inspectAuthForUrl } from "./mcp-auth.ts";
 import { inspectBearerTokenForUrl, removeBearerToken } from "./mcp-bearer-store.ts";
@@ -149,6 +149,11 @@ export async function showStatus(state: McpExtensionState, ctx: ExtensionContext
   if (state.scriptToolIssues?.length) {
     lines.push(...state.scriptToolIssues.map((issue) => `⚠ ${issue}`), "");
   }
+  const readCache = cacheReader();
+  const catalogNotes = executorCatalogNotes(state, readCache);
+  if (catalogNotes.length > 0) {
+    lines.push(...catalogNotes.map((note) => `⚠ ${sanitizeTerminalText(note)}`), "");
+  }
   if (!state.programmaticConfig) {
     lines.push(
       "Shared MCP config: .mcp.json for this project/team or ~/.config/mcp/mcp.json for all projects.",
@@ -170,7 +175,7 @@ export async function showStatus(state: McpExtensionState, ctx: ExtensionContext
     }
     const connection = state.manager.getConnection(name);
     const metadata = state.toolMetadata.get(name);
-    const toolCount = metadata?.length ?? 0;
+    const toolCount = ownTools(metadata).length;
     const failedAgo = getFailureAgeSeconds(state, name);
     let status = "not listening (disconnected)";
     let statusIcon = "○";
@@ -203,6 +208,8 @@ export async function showStatus(state: McpExtensionState, ctx: ExtensionContext
 
     const toolSuffix = failed ? "" : ` (${toolCount} tools${status.startsWith("cached") ? ", cached" : ""})`;
     lines.push(`${statusIcon} ${name}: ${status}${toolSuffix}`);
+    const appTools = executorAppToolsStatus(state, name, readCache);
+    if (appTools) lines.push(`  ${appTools}`);
   }
 
   if (state.config.settings?.freezeDirectTools === true) {
@@ -257,12 +264,18 @@ export async function showPrompts(state: McpExtensionState, ctx: ExtensionContex
 export async function showTools(state: McpExtensionState, ctx: ExtensionContext): Promise<void> {
   if (!ctx.hasUI) return;
 
-  const allTools = [...state.toolMetadata.entries()]
+  const servers = [...state.toolMetadata.entries()]
     .filter(([serverName]) => !isServerDisabled(state.config.mcpServers[serverName]))
-    .filter(([serverName]) => !isServerInActiveFailureBackoff(state, serverName))
-    .flatMap(([, metadata]) => metadata.map(m => m.name));
+    .filter(([serverName]) => !isServerInActiveFailureBackoff(state, serverName));
+  // Executor's app tools are counted in one line per server, not listed: there can be a thousand.
+  const allTools = servers.flatMap(([, metadata]) => ownTools(metadata).map(m => m.name));
+  const readCache = cacheReader();
+  const appToolLines = servers.flatMap(([serverName]) => {
+    const line = executorAppToolsLine(state, serverName, readCache);
+    return line ? [`  ${serverName}: ${line}`] : [];
+  });
 
-  if (allTools.length === 0) {
+  if (allTools.length === 0 && appToolLines.length === 0) {
     ctx.ui.notify("No MCP tools available", "info");
     return;
   }
@@ -271,6 +284,7 @@ export async function showTools(state: McpExtensionState, ctx: ExtensionContext)
     "MCP Tools:",
     "",
     ...allTools.map(t => `  ${t}`),
+    ...appToolLines,
     "",
     `Total: ${allTools.length} tools`,
   ];
@@ -326,6 +340,7 @@ export async function reconnectServer(
     } else {
       state.serverInstructions.delete(name);
     }
+    // Also puts this session's Executor app tools back into the metadata buildToolMetadata just replaced.
     updateMetadataCache(state, name);
     const restored = clearFailure(state, name, "command-reconnect");
     if (!restored) notifyToolMetadataUpdated(state, name, "command-reconnect");

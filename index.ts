@@ -19,6 +19,7 @@ import { buildScriptToolSavePrompt, checkScriptToolCode, checkScriptToolSave, sc
 import { namespaceProxyName } from "./mcp-references.ts";
 import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
 import { isServerCacheValid, loadMetadataCache, parseDirectToolSelectors, withSessionMetadata, type MetadataCache } from "./metadata-cache.ts";
+import { isExecutorCatalogEntry } from "./executor-catalog.ts";
 import { createPromptCommand, resolveCachedPrompts } from "./prompts.ts";
 import { logger } from "./logger.ts";
 import { formatMcpFooterStatus, formatTerminalError, getConfigPathFromArgv, normalizeDirectToolInputSchema, truncateAtWord } from "./utils.ts";
@@ -95,6 +96,15 @@ function hasEnabledServerWithoutValidMetadata(
     if (isServerDisabled(definition) || directSpecs.some((spec) => spec.serverName === serverName)) return false;
     const entry = cache?.servers[serverName];
     return entry === undefined || !isServerCacheValid(entry, definition);
+  });
+}
+
+/** An enabled Executor whose valid cached listing has no app catalog yet: its startup connect pages one. */
+function hasExecutorWithoutCatalog(config: McpConfig, cache: MetadataCache | null): boolean {
+  return Object.entries(config.mcpServers).some(([serverName, definition]) => {
+    const entry = cache?.servers[serverName];
+    return entry !== undefined && !entry.executorApps && !isServerDisabled(definition)
+      && isExecutorCatalogEntry(entry) && isServerCacheValid(entry, definition);
   });
 }
 
@@ -473,6 +483,8 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
       resourceUri: spec.resourceUri,
       uiResourceUri: spec.uiResourceUri,
       uiStreamMode: spec.uiStreamMode,
+      // An Executor app tool's closure sends this path, so a refresh that only respells it must re-register.
+      executorPath: spec.executorPath,
       // A mode-only change (search ↔ eager) must re-register, or the tool
       // keeps the activation behavior of the mode it was registered under.
       lazy: spec.lazy === true,
@@ -1081,6 +1093,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
       && getMissingConfiguredDirectToolServers(config, cache, envDirectToolOverride).length > 0) return undefined;
     if (config.settings?.deferWithMissingMetadata !== true
       && (cache === null || hasEnabledServerWithoutValidMetadata(config, cache))) return undefined;
+    if (envRaw !== "__none__" && hasExecutorWithoutCatalog(config, cache)) return undefined;
     return { config, cache, enabledServerCount: enabledServers.length, scriptToolIssues: programmaticConfig ? sessionScriptToolIssues : loadedScriptToolIssues(config) };
   }
 
@@ -1493,6 +1506,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
         guard();
         nextState.onToolMetadataUpdated = (_serverName, _reason) => {
           if (state !== nextState || !owner.isActive()) return;
+          if (envRaw !== "__none__") coreRuntime?.refreshExecutorCatalog(nextState, _serverName, _reason);
           syncPromptCommands();
           if (directToolsFrozen) {
             logger.debug(`MCP: metadata update for ${_serverName} (${_reason}) skipped — directTools frozen`);
@@ -1504,6 +1518,11 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
         syncPromptCommands();
         guard();
         syncToolSurface(ctx);
+        guard();
+        // Startup connects ran before the hook above was set.
+        if (envRaw !== "__none__") {
+          for (const name of Object.keys(nextState.config.mcpServers)) coreRuntime?.refreshExecutorCatalog(nextState, name);
+        }
         guard();
         // A connected snapshot is readiness-like external state. Publish it only
         // after Pi's model-facing direct-tool surface reflects live metadata.
@@ -2844,7 +2863,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
           return connectAndReport(proxyState, params.connect, signal, _ctx as ExtensionContext);
         }
         if (params.describe) {
-          const result = await proxyModes.executeGuardedDescribe(proxyState, params.describe, params.server);
+          const result = await proxyModes.executeGuardedDescribe(proxyState, params.describe, params.server, signal);
           assertRuntimeGuard(proxyGuard);
           return result;
         }

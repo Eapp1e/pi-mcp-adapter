@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { homedir } from "node:os";
+import { mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIRECT_TOOLS_ADVISORY_THRESHOLD, buildProxyDescription, getLargeDirectToolsAdvisory, resolveDirectTools } from "../direct-tools.ts";
 import {
@@ -101,6 +102,112 @@ describe("deferred tool names", () => {
     expect(names).toHaveLength(2);
     expect(names).not.toContain("mcp__s__a_b");
     expect(reversed).toEqual([...names].reverse());
+  });
+});
+
+describe("Executor app tool names", () => {
+  const executor: ServerEntry = { command: "executor" };
+  const appTool = (path: string) => ({ path, canonicalPath: path.replace(/^tools\./, ""), description: "", inputType: "{}" });
+  function executorCache(definition: ServerEntry, tools: string[], paths: string[]): MetadataCache {
+    return {
+      version: 1,
+      servers: {
+        executor: {
+          configHash: computeServerHash(definition), cachedAt: Date.now(), tools: tools.map((name) => ({ name })), resources: [],
+          executorApps: { tools: paths.map(appTool), total: paths.length, cap: 1000, fetchedAt: Date.now() },
+        },
+      },
+    };
+  }
+  function appNames(paths: string[], tools: string[] = ["search"], owners?: Map<string, string>) {
+    const config: McpConfig = { mcpServers: { executor } };
+    return resolveDeferredToolSpecs(config, executorCache(executor, tools, paths), { names: new Set(), directTools: [], ...(owners ? { owners } : {}) })
+      .filter((spec) => spec.executorPath !== undefined)
+      .map((spec) => [spec.originalName, spec.name]);
+  }
+
+  it("names an app tool mcp__<server>__<app>_<tool> by its canonical path, and skips Executor's own tools", () => {
+    expect(appNames(["tools.executor.apps.list", "tools.github.issues.list"])).toEqual([["github.issues.list", "mcp__executor__github_issues_list"]]);
+  });
+
+  it("hashes paths that differ only in . and _, a path over 64 characters, and a path that takes an Executor tool's name", () => {
+    const long = `tools.app.${"router.".repeat(10)}tool`;
+    const named = Object.fromEntries(appNames(["tools.a.b_c", "tools.a_b.c", long, "tools.search.x"], ["search", "search_x"]));
+    expect(named["a.b_c"]).toMatch(/^mcp__executor__a_b_c_[0-9a-f]{8}$/);
+    expect(named["a_b.c"]).toMatch(/^mcp__executor__a_b_c_[0-9a-f]{8}$/);
+    expect(named["a.b_c"]).not.toBe(named["a_b.c"]);
+    expect(named[long.slice("tools.".length)]).toHaveLength(64);
+    expect(named["search.x"]).toMatch(/^mcp__executor__search_x_[0-9a-f]{8}$/);
+  });
+
+  it("leaves a name the session gave another tool with that tool", () => {
+    const owners = new Map([["mcp__executor__github_issues_list", "another tool"]]);
+    expect(appNames(["tools.github.issues.list"], ["search"], owners)).toEqual([
+      ["github.issues.list", expect.stringMatching(/^mcp__executor__github_issues_list_[0-9a-f]{8}$/)],
+    ]);
+  });
+
+  it("never resolves an app tool as a direct tool, with directTools true or naming its path", () => {
+    for (const directTools of [true, ["github.issues.list"], "search"] as const) {
+      const definition: ServerEntry = { command: "executor", directTools };
+      const specs = resolveDirectTools({ mcpServers: { executor: definition } }, executorCache(definition, ["search"], ["tools.github.issues.list"]), "server");
+      expect(specs.map((spec) => spec.originalName)).toEqual(directTools === true || directTools === "search" ? ["search"] : []);
+    }
+  });
+
+  it("gives two app tools with one adapter name one proxy entry, the first in Executor's order, and each its own Pi tool", () => {
+    const paths = ["tools.a.b_c", "tools.a_b.c"];
+    const cache = executorCache(executor, ["search"], paths);
+    const metadata = reconstructToolMetadata("executor", cache.servers.executor!, "server", executor, { executor }, cache);
+    expect(metadata.filter((tool) => tool.executorPath !== undefined).map((tool) => [tool.name, tool.originalName])).toEqual([["executor_a_b_c", "a.b_c"]]);
+    expect(appNames(paths)).toEqual([
+      ["a.b_c", expect.stringMatching(/^mcp__executor__a_b_c_[0-9a-f]{8}$/)],
+      ["a_b.c", expect.stringMatching(/^mcp__executor__a_b_c_[0-9a-f]{8}$/)],
+    ]);
+  });
+
+  it("skips a corrupt cached catalog item instead of failing", () => {
+    // excludeTools makes both readers build the cross-server candidate index, which reads the catalog too.
+    const definition: ServerEntry = { ...executor, excludeTools: ["nothing"] };
+    const cache = executorCache(definition, ["search"], ["tools.a.x"]);
+    const apps = cache.servers.executor!.executorApps!;
+    apps.tools = [null, { path: "tools" }, ...apps.tools] as never;
+    const config: McpConfig = { mcpServers: { executor: definition } };
+    expect(reconstructToolMetadata("executor", cache.servers.executor!, "server", config.mcpServers.executor!, config.mcpServers, cache)
+      .filter((tool) => tool.executorPath !== undefined).map((tool) => tool.originalName)).toEqual(["a.x"]);
+    expect(resolveDeferredToolSpecs(config, cache, { names: new Set(), directTools: [] }).filter((spec) => spec.executorPath).map((spec) => spec.originalName)).toEqual(["a.x"]);
+  });
+
+  it("keeps the same app tools after a connect as from the cache, for a pattern only a dashed name's legacy form matches", () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "pi-mcp-executor-selector-"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+    try {
+      // Only the legacy, dash-normalised form of my-app.tool matches; my_app.tool's own name does too.
+      const definition: ServerEntry = { ...executor, excludeTools: ["executor_my_app_tool"] };
+      const cache = executorCache(definition, ["search"], ["tools.my-app.tool", "tools.my_app.tool"]);
+      const config: McpConfig = { settings: { toolPrefix: "server" }, mcpServers: { executor: definition } };
+      const appTools = (metadata: Array<{ originalName: string; executorPath?: string }> | undefined) =>
+        metadata?.filter((tool) => tool.executorPath !== undefined).map((tool) => tool.originalName);
+      const cached = appTools(reconstructToolMetadata("executor", cache.servers.executor!, "server", definition, config.mcpServers, cache));
+
+      const state = {
+        config,
+        sessionMetadata: new Map([["executor", cache.servers.executor!]]),
+        toolMetadata: new Map(),
+        resourceCounts: new Map(),
+        promptMetadata: new Map(),
+        promptMetadataLive: new Set(),
+        serverInstructions: new Map(),
+        manager: { getConnection: () => ({ status: "connected", tools: [{ name: "search" }], resources: [], prompts: [] }) },
+      } as any;
+      updateServerMetadata(state, "executor");
+
+      expect(cached).toEqual(["my-app.tool"]);
+      expect(appTools(state.toolMetadata.get("executor"))).toEqual(cached);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 });
 
