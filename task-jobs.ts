@@ -33,15 +33,20 @@ export interface BackgroundTaskInfo {
 interface RunningTask {
   info: BackgroundTaskInfo;
   execution: BackgroundToolExecution;
-  stopRequested: boolean;
+  /** Who asked to stop the task, named in the cancelled message. */
+  stoppedBy?: "you" | "the agent";
 }
 
-/** The tool result a call returns once its task runs in the background. */
-export function backgroundTaskHandle(server: string, tool: string, taskId: string) {
+/**
+ * The tool result a call returns once its task runs in the background. `cancelHint` names
+ * mcp({ cancelTask }) only while the `mcp` tool exists to take it.
+ */
+export function backgroundTaskHandle(server: string, tool: string, taskId: string, cancelHint: boolean) {
+  const hint = cancelHint ? ` To stop it, call mcp({ cancelTask: ${JSON.stringify(`${server}/${taskId}`)} }).` : "";
   return {
     content: [{
       type: "text" as const,
-      text: `Task ${taskId} started on ${server}/${tool}. Do not call the tool again; the result arrives later as an mcp-task-result message.`,
+      text: `Task ${taskId} started on ${server}/${tool}. Do not call the tool again; the result arrives later as an mcp-task-result message.${hint}`,
     }],
     task: { id: taskId, server, tool, status: "working" as const },
   };
@@ -72,10 +77,10 @@ export class BackgroundTaskRegistry {
   }
 
   /** Resolves false for an unknown key; rejects when the cancel request fails. */
-  async stop(key: string): Promise<boolean> {
+  async stop(key: string, by: "you" | "the agent"): Promise<boolean> {
     const entry = this.running.get(key);
     if (entry === undefined) return false;
-    entry.stopRequested = true;
+    entry.stoppedBy = by;
     await entry.execution.cancel();
     return true;
   }
@@ -89,7 +94,6 @@ export class BackgroundTaskRegistry {
     const entry: RunningTask = {
       info: { key, tool: task.tool, status: "working" },
       execution: task.execution,
-      stopRequested: false,
     };
     this.running.set(key, entry);
     this.onChange();
@@ -133,8 +137,8 @@ export class BackgroundTaskRegistry {
         } else {
           const reason = outcome.status === "failed"
             ? `The connection to ${task.server} closed.`
-            : entry.stopRequested
-              ? "Stopped by you."
+            : entry.stoppedBy !== undefined
+              ? `Stopped by ${entry.stoppedBy}.`
               : outcome.task?.statusMessage ?? "Task was cancelled by the server";
           const guarded = await task.guard(reason);
           message = {

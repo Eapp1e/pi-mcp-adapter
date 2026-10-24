@@ -25,8 +25,11 @@ export interface BackgroundTaskInfo {
     status: TaskState;
     statusMessage?: string;
 }
-/** The tool result a call returns once its task runs in the background. */
-export declare function backgroundTaskHandle(server: string, tool: string, taskId: string): {
+/**
+ * The tool result a call returns once its task runs in the background. `cancelHint` names
+ * mcp({ cancelTask }) only while the `mcp` tool exists to take it.
+ */
+export declare function backgroundTaskHandle(server: string, tool: string, taskId: string, cancelHint: boolean): {
     content: {
         type: "text";
         text: string;
@@ -54,7 +57,7 @@ export declare class BackgroundTaskRegistry {
     get size(): number;
     list(): BackgroundTaskInfo[];
     /** Resolves false for an unknown key; rejects when the cancel request fails. */
-    stop(key: string): Promise<boolean>;
+    stop(key: string, by: "you" | "the agent"): Promise<boolean>;
     /**
      * Takes over the call's in-flight count. Resolves once the outcome is
      * delivered and the count released.

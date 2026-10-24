@@ -1,11 +1,15 @@
 import { TaskExecutionClosedError, taskViewFromExecutionEvent } from "@modelcontextprotocol/ext-tasks/client";
 import { logger } from "./logger.js";
-/** The tool result a call returns once its task runs in the background. */
-export function backgroundTaskHandle(server, tool, taskId) {
+/**
+ * The tool result a call returns once its task runs in the background. `cancelHint` names
+ * mcp({ cancelTask }) only while the `mcp` tool exists to take it.
+ */
+export function backgroundTaskHandle(server, tool, taskId, cancelHint) {
+    const hint = cancelHint ? ` To stop it, call mcp({ cancelTask: ${JSON.stringify(`${server}/${taskId}`)} }).` : "";
     return {
         content: [{
                 type: "text",
-                text: `Task ${taskId} started on ${server}/${tool}. Do not call the tool again; the result arrives later as an mcp-task-result message.`,
+                text: `Task ${taskId} started on ${server}/${tool}. Do not call the tool again; the result arrives later as an mcp-task-result message.${hint}`,
             }],
         task: { id: taskId, server, tool, status: "working" },
     };
@@ -35,11 +39,11 @@ export class BackgroundTaskRegistry {
         return [...this.running.values()].map(({ info }) => ({ ...info }));
     }
     /** Resolves false for an unknown key; rejects when the cancel request fails. */
-    async stop(key) {
+    async stop(key, by) {
         const entry = this.running.get(key);
         if (entry === undefined)
             return false;
-        entry.stopRequested = true;
+        entry.stoppedBy = by;
         await entry.execution.cancel();
         return true;
     }
@@ -52,7 +56,6 @@ export class BackgroundTaskRegistry {
         const entry = {
             info: { key, tool: task.tool, status: "working" },
             execution: task.execution,
-            stopRequested: false,
         };
         this.running.set(key, entry);
         this.onChange();
@@ -104,8 +107,8 @@ export class BackgroundTaskRegistry {
             else {
                 const reason = outcome.status === "failed"
                     ? `The connection to ${task.server} closed.`
-                    : entry.stopRequested
-                        ? "Stopped by you."
+                    : entry.stoppedBy !== undefined
+                        ? `Stopped by ${entry.stoppedBy}.`
                         : outcome.task?.statusMessage ?? "Task was cancelled by the server";
                 const guarded = await task.guard(reason);
                 message = {

@@ -1260,6 +1260,28 @@ function formatParameterNames(toolMeta: ToolMetadata): string {
   return `(${ordered.join(", ")})`;
 }
 
+/** `mcp({ cancelTask })`: stops a background task the model started; no tool approval, like `/mcp-adapter tasks stop`. */
+export async function executeCancelTask(state: McpExtensionState, key: string): Promise<ProxyToolResult> {
+  const failed = (text: string, error: string) => ({
+    content: [{ type: "text" as const, text }],
+    details: { mode: "cancelTask", task: key, error },
+  });
+  if (state.backgroundTasks === undefined) {
+    return failed("Background MCP tasks run only in the interactive terminal, so there is no task to cancel.", "no_background_tasks");
+  }
+  try {
+    if (!await state.backgroundTasks.stop(key, "the agent")) {
+      return failed(`No running MCP task "${key}". It may have finished already; its result arrives as an mcp-task-result message.`, "not_found");
+    }
+  } catch (error) {
+    return failed(`Could not cancel MCP task "${key}": ${error instanceof Error ? error.message : String(error)}`, "cancel_failed");
+  }
+  return {
+    content: [{ type: "text" as const, text: `Cancel requested for MCP task "${key}". An mcp-task-result message confirms it.` }],
+    details: { mode: "cancelTask", task: key },
+  };
+}
+
 export function executeInstructions(state: McpExtensionState, server: string): ProxyToolResult {
   const definition = state.config.mcpServers[server];
   if (!definition) {
@@ -1954,7 +1976,7 @@ export async function executeCall(
         },
       });
       backgrounded = true;
-      const handle = backgroundTaskHandle(serverName, toolMeta.originalName, taskId);
+      const handle = backgroundTaskHandle(serverName, toolMeta.originalName, taskId, state.proxyToolAvailable?.() === true);
       return { content: handle.content, details: { mode: "call", ...callIdentity, task: handle.task } };
     }
     const result = toolMeta.executorPath !== undefined ? unwrapExecutorCallResult(toolMeta.executorPath, callResult) : callResult;
