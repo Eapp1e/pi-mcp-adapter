@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A long-running MCP tool, such as a CI run or a report export, used to hold Pi until it finished. Now the call returns right away, the agent keeps working, and the result arrives by itself when the job ends. `/mcp-adapter tasks` lists running jobs and stops one. Calls from scripts and other code, MCP UI and Executor tools, and sessions outside the interactive terminal still wait for their result. This needs a server that supports MCP Tasks on a 2026-07-28 connection (`"protocolVersion": "auto"`). See [#882](https://github.com/nicobailon/pi-mcp-adapter/issues/882) and [Task-augmented tool calls](docs/servers.md#task-augmented-tool-calls).
+
 ## [6.0.0] - 2026-10-22
 
 ### Highlights
