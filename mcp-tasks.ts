@@ -44,6 +44,7 @@ import {
   TaskFailedError,
   type ApplicationElicitContentValue,
   type ApplicationRoot,
+  type ApplicationSamplingContentBlock,
   type RawClientDispatch,
   type TaskEnabledSession,
 } from "@modelcontextprotocol/ext-tasks/client";
@@ -358,7 +359,7 @@ export async function attachTaskSession(
       return {
         model: result.model,
         role: result.role,
-        content: result.content as never,
+        content: result.content as ApplicationSamplingContentBlock | readonly ApplicationSamplingContentBlock[],
       };
     },
     roots: async () => ({ roots: options.roots ?? [] }),
@@ -377,6 +378,8 @@ export async function attachTaskSession(
     // Tool declarations only add per-tool taskSupport hints; the adapter's
     // cached tools/list is not threaded through here, and a miss is harmless.
     tools: { currentTool: () => undefined },
+    // ext-tasks 0.1.0 stopped a call after 10 input-required rounds; 0.2.x is unbounded unless asked.
+    maxInputRounds: 10,
     onInputRequest,
     onError: (error) => logger.warn(`ext-tasks background error for ${serverName}: ${String(error)}`),
   });
