@@ -457,6 +457,7 @@ function describeConnectError(err, definition, url) {
     return err.message;
   }
   let status;
+  let invalid;
   const codes = new Set();
   const pending = [err];
   const seen = new Set();
@@ -467,7 +468,27 @@ function describeConnectError(err, definition, url) {
     if (typeof current.status === "number") status ??= current.status;
     status ??= /\(HTTP (\d{3})\)/.exec(current.message ?? "")?.[1];
     if (typeof current.code === "string" && /^E[A-Z]+$/.test(current.code)) codes.add(current.code);
+    if (current.code === "INVALID_RESULT") invalid ??= current;
     pending.push(current.cause, current.data?.cause, ...(current instanceof AggregateError ? current.errors : []));
+  }
+  if (invalid) {
+    // The SDK's message ends with Zod's issue list as JSON. Print only each issue's path and expected
+    // type: its message and other fields can quote what the server sent. The method comes from this
+    // message, which names the client's own request; `data.method` can be a name the server chose.
+    const [, method, detail] = /^Invalid result for (\S+): (.*)$/s.exec(invalid.message) ?? [];
+    let issues;
+    try {
+      issues = JSON.parse(detail);
+    } catch {}
+    const fields = (Array.isArray(issues) ? issues : []).filter((issue) => Array.isArray(issue?.path)).map((issue) => {
+      // Keys under a schema's `properties` are names the server chose, so the path stops there.
+      const end = issue.path.indexOf("properties") + 1;
+      const keys = end > 0 ? issue.path.slice(0, end) : issue.path;
+      const path = keys.map((key, index) => typeof key === "number" ? `[${key}]` : `${index > 0 ? "." : ""}${key}`).join("");
+      return end === 0 && typeof issue.expected === "string" && /^[a-z]+$/.test(issue.expected) ? `${path} (expected ${issue.expected})` : path;
+    });
+    const shown = fields.length > 3 ? [...fields.slice(0, 3), `${fields.length - 3} more`] : fields;
+    return `server sent an invalid ${method ? `${method} ` : ""}result${shown.length > 0 ? `: ${shown.join(", ")}` : ""}`;
   }
   const parts = [...(status ? [`HTTP ${status}`] : []), ...codes];
   // server-manager appends the probe classification to the original message, keeping it as cause.

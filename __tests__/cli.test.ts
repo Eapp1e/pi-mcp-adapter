@@ -781,6 +781,36 @@ describe("cli doctor", { timeout: 30_000 }, () => {
     }
   });
 
+  it("names the field of an invalid tool list without printing what the server sent", async () => {
+    const url = await listen((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        const message = body ? JSON.parse(body) : {};
+        if (request.method !== "POST" || message.id === undefined) {
+          response.writeHead(request.method === "POST" ? 202 : 405).end();
+          return;
+        }
+        const result = message.method === "initialize"
+          ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "bad-list", version: "1.0.0" } }
+          : { tools: [
+            { name: "ok", inputSchema: { type: "object" } },
+            { name: "bad", inputSchema: { type: "object" }, annotations: "annotation-secret-value" },
+            // JSON.parse reads 1e999 as Infinity, which fails validation under a key the server chose.
+            { name: "badKey", inputSchema: { type: "object", properties: { "property-secret-name": "INFINITY" } } },
+          ] };
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }).replace('"INFINITY"', "1e999"));
+      });
+    });
+
+    const result = await doctor([], setup({ mcpServers: { badList: { url } } }));
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("badList: failed — server sent an invalid tools/list result: tools[1].annotations (expected object), tools[2].inputSchema.properties");
+    expect(result.stdout + result.stderr).not.toMatch(/annotation-secret-value|property-secret-name/);
+  });
+
   it("reports tool counts and leaves no server process running after exit", async () => {
     const pidFile = join(tmpdir(), `pi-mcp-doctor-pid-${process.pid}-${Date.now()}`);
     const context = setup({
