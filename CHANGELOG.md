@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.0] - 2026-10-25
+
 ### Highlights
 
 - Slow MCP jobs, like a CI run, a research job or a report export, no longer hold up your session on servers that support MCP Tasks once you add `"protocolVersion": "auto"`. Pi gets control back right away, and the result arrives as a new message when the job finishes. If you quit Pi, it arrives when you reopen that session, as long as the server kept the job running.
